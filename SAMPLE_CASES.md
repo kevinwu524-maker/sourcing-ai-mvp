@@ -1,27 +1,12 @@
-# V8 Sample Interview Cases
+# Sample Cases
 
-These sample cases are designed for employee onboarding and calibration. They are fictional but realistic enough to test the scoring logic.
+V9 includes six training cases:
 
-## Case 1｜Shopify Seller：有销量，缺 sourcing + affiliate 增长
-Expected route: Sourcing Support + MyyBiz CPS / Store  
-Training focus: Do not push MyyBiz before validating target price, MOQ, sample, and packaging.
+1. Seller with sales, needs sourcing + affiliate growth
+2. Creator with audience, no supply chain, good for Co-Creation
+3. Brand with product, wants KOL/KOC seeding, good for Myyshop
+4. Merchant seeking distributor/reseller leads, good for CPL
+5. Low-readiness beginner, good for Nurture/Self-service
+6. Gray compliance skincare/slimming claim, needs compliance review first
 
-## Case 2｜Creator：强内容能力，无供应链，适合 Co-Creation
-Expected route: Co-Creation  
-Training focus: Treat as creator/product collaboration, not a normal merchant store setup.
-
-## Case 3｜Brand：有产品，想要 KOL/KOC 种草
-Expected route: Myyshop / Product Seeding + CPS later  
-Training focus: Start with seeding and UGC/content deliverables, not heavy sourcing.
-
-## Case 4｜Merchant：想招代理/分销商
-Expected route: MyyBiz CPL / Distributor Lead Gen  
-Training focus: Qualified leads matter more than traffic/clicks.
-
-## Case 5｜Low readiness：只有想法，缺产品/预算/渠道
-Expected route: Nurture / Self-service  
-Training focus: Do not enter sourcing queue. Use education materials and low-frequency follow-up.
-
-## Case 6｜Gray Compliance：功效护肤/减肥宣称
-Expected route: Compliance Review first; CPL only if approved  
-Training focus: Compliance gate overrides business potential.
+Use Training Sample mode for employee onboarding and calibration.

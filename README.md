@@ -1,50 +1,44 @@
-# Sourcing AI MVP V8.1
+# Sourcing AI MVP V9 — Client Profile & Route Recommender
 
-V8.1 keeps the built-in sample interview cases and adds project acknowledgements for Handbook and Live Conversation Toolkit contributors.
+V9 is redesigned to be more employee-friendly:
 
-## Acknowledgements
+1. **Profile first, score later** — employees see the client profile, recommended route, priority, confidence, and next action before detailed scoring.
+2. **Guided workflow** — four clear modes: Analyze Interview, Quick Assessment, Training Sample, and Benchmark/Credits.
+3. **Copy-ready output** — the app generates internal next steps, client-facing follow-up, CRM note, and CSV export.
+4. **Human final review** — employees can agree, partially agree, or override the system recommendation.
+5. **Training mode** — sample cases are included for onboarding and route calibration.
 
-- Handbook input: Special thanks to Frank and Jack for their input on the DHgate MyyBiz SP Follow-up Handbook.
-- Live Conversation Toolkit input: Special thanks to Ouna for her input on the Live Conversation & Interview Toolkit.
-
-These inputs helped shape the interview flow, scoring benchmarks, route recommendation, and personalized follow-up logic.
-
-## How to run
+## Run locally
 
 ```bash
-cd sourcing_ai_mvp_v8
+cd ~/Downloads/sourcing_ai_mvp_v9
 python3 -m pip install -r requirements.txt
 python3 -m streamlit run app.py
 ```
 
-Open: http://localhost:8501
+Then open:
 
-## What's new in V8
+```text
+http://localhost:8501
+```
 
-- Built-in sample cases inside Step 0 Interview Analyzer.
-- Six fictional but realistic training cases:
-  - Shopify seller needing sourcing + affiliate growth
-  - Creator suitable for Co-Creation
-  - Brand suitable for Myyshop / Product Seeding
-  - Merchant suitable for CPL distributor lead gen
-  - Low-readiness client for Nurture / Self-service
-  - Gray compliance case requiring approval first
-- Expected route and training note included for each sample.
+## Upload to GitHub / Streamlit
 
-## Files to upload to GitHub
+Upload these files to the repo root:
 
-Upload:
-- app.py
-- requirements.txt
-- README.md
-- GRADING_BENCHMARK.md
-- INTERVIEW_SIGNAL_MAP.md
-- PERSONALIZED_ACTION_LOGIC.md
-- SAMPLE_CASES.md
-- ACKNOWLEDGEMENTS.md
-- data/
+- `app.py`
+- `requirements.txt`
+- `README.md`
+- `ACKNOWLEDGEMENTS.md`
+- `SAMPLE_CASES.md`
+- `data/`
 
 Do not upload:
-- __pycache__
-- README_old.md
-- zip file
+
+- `__pycache__`
+- `.zip` files
+- old README files
+
+## Data caution
+
+Use client codes instead of real client names when possible. Avoid putting phone numbers, emails, Stripe details, or full sensitive conversations into public systems.
