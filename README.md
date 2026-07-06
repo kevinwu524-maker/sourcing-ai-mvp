@@ -15,7 +15,7 @@ V10 focuses on employee-friendly usage and safer review flow.
 ## How to run locally
 
 ```bash
-cd ~/Downloads/sourcing_ai_mvp_v10
+cd ~/Downloads/sourcing-ai-mvp-main
 python3 -m pip install -r requirements.txt
 python3 -m streamlit run app.py
 ```
