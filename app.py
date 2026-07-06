@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 
-st.set_page_config(page_title="Sourcing AI Scoring Tool V6", page_icon="🧭", layout="wide")
+st.set_page_config(page_title="Sourcing AI Scoring Tool V7", page_icon="🧭", layout="wide")
 
 # -----------------------------
 # 1) Rule settings: compliance gate
@@ -623,19 +623,241 @@ def build_closing_confirmation(missing):
     return [qmap[m] for m in missing[:6] if m in qmap]
 
 
+
+def _score_strength(score):
+    if score >= 75:
+        return "强"
+    if score >= 55:
+        return "中等"
+    return "弱"
+
+
+def _safe_join(items, default="暂无明显信号"):
+    return "、".join(items) if items else default
+
+
+def build_customer_snapshot(flags, draft, present, missing):
+    """Turn raw scores into a human-readable BD snapshot."""
+    strengths = []
+    risks = []
+    if draft.get('product_score', 0) >= 70:
+        strengths.append("商品/供应链方向相对清楚")
+    elif draft.get('product_score', 0) < 55:
+        risks.append("商品需求或 sourcing 可行性还不够清楚")
+    if draft.get('client_score', 0) >= 70:
+        strengths.append("客户商业价值较高")
+    elif draft.get('client_score', 0) < 55:
+        risks.append("客户预算、销量或决策信号不足")
+    if draft.get('myybiz_score', 0) >= 70:
+        strengths.append("MyyBiz/渠道匹配度较高")
+    elif draft.get('myybiz_score', 0) < 55:
+        risks.append("MyyBiz 角色、分销资源或佣金结构不清")
+    if flags.get('has_gmv_or_orders'):
+        strengths.append("访谈中提到 GMV/订单表现")
+    if flags.get('has_paid_budget'):
+        strengths.append("有营销预算或愿意做付费测试")
+    if flags.get('has_proof'):
+        strengths.append("有可验证材料信号")
+    if flags.get('zero_resource'):
+        risks.append("客户可能缺产品、缺流量或缺预算")
+    if draft.get('evidence_level','').startswith('Low'):
+        risks.append("目前证据偏弱，不能按客户口述直接高优先级推进")
+    if flags.get('compliance_sensitive'):
+        risks.append("存在合规敏感信号，审批优先")
+    return {
+        "strengths": strengths[:5],
+        "risks": risks[:5],
+        "present": present,
+        "missing": missing,
+    }
+
+
+def build_personalized_plan(top_route, flags, draft, present, missing):
+    route = top_route.get("推荐路线", "Nurture / Self-service")
+    evidence = draft.get('evidence_level','')
+    product_s = draft.get('product_score', 0)
+    client_s = draft.get('client_score', 0)
+    myybiz_s = draft.get('myybiz_score', 0)
+    overall = draft.get('adjusted_overall', 0)
+    snapshot = build_customer_snapshot(flags, draft, present, missing)
+
+    if flags.get('compliance_sensitive'):
+        priority = "先合规，再业务推进"
+    elif overall >= 85:
+        priority = "Fast Track，但要锁定一个具体 next step"
+    elif overall >= 70:
+        priority = "可推进，小范围验证后再加资源"
+    elif overall >= 55:
+        priority = "先补证据和关键信息，不急着投入"
+    else:
+        priority = "轻量 nurture，暂不进入 deep sourcing"
+
+    route_config = {
+        "MyyBiz Store": {
+            "angle": "不要先讲所有功能，先把客户的产品上架和收款链路跑通。",
+            "step1": "确认 1-3 个最适合先上架的 SKU、目标售价、库存/供应方式和素材完整度。",
+            "step2": "安排 5 分钟 store demo，只展示商品上传、价格、订单和 affiliate 链接，不做大而全介绍。",
+            "step3": "让客户在 48 小时内补齐产品图/视频/卖点/价格表；资料齐再进入店铺搭建。",
+            "talk": "Based on what you shared, I don’t think we need to overcomplicate this. The best next step is to pick 1-3 products and see whether we can quickly turn them into a simple store flow. If that works, we can add affiliate or traffic support later.",
+        },
+        "MyyBiz CPC": {
+            "angle": "客户缺流量时，先验证预算、素材和目标，不要直接承诺投放结果。",
+            "step1": "确认月预算区间、目标 CPA/ROAS、目标地区和主推 SKU。",
+            "step2": "检查素材是否能投放：图片/视频/落地页/卖点/价格是否完整。",
+            "step3": "建议先做小额 7-14 天 test，结果达标再扩量。",
+            "talk": "Since your main bottleneck seems to be traffic, I’d suggest we start with a small test instead of a big campaign. First we need to confirm your budget range, target product, and whether the creative materials are ready.",
+        },
+        "MyyBiz CPL": {
+            "angle": "客户想招代理/分销商时，重点不是曝光，而是 lead 质量和后续跟进能力。",
+            "step1": "定义目标 lead：地区、角色、采购能力、类目兴趣、最低合作门槛。",
+            "step2": "确认 lead 表单字段和客户内部谁负责 24-48 小时内跟进。",
+            "step3": "先小范围收集 lead，复盘有效率后再扩大投放。",
+            "talk": "If the goal is to find resellers or distributors, I’d treat this as a lead quality project, not just a traffic project. We should first define what a qualified partner looks like and who will follow up once leads come in.",
+        },
+        "MyyBiz CPS / Affiliate": {
+            "angle": "客户想用达人/affiliate 带货时，先看佣金空间、样品能力和素材，而不是先找一堆达人。",
+            "step1": "确认可给佣金比例、毛利空间、样品数量和可接受履约方式。",
+            "step2": "确定 creator/affiliate 画像：平台、粉丝量级、内容风格、目标人群。",
+            "step3": "先跑 3-5 个小样本 creator/affiliate，验证点击、内容质量和首单转化。",
+            "talk": "This sounds more suitable for a performance-based affiliate test. Before we bring creators in, we should make sure the commission, sample plan, and product story are clear enough for them to promote.",
+        },
+        "Co-Creation": {
+            "angle": "Creator 型客户不要一上来推店铺功能，要先确认个人品牌、受众和产品创意是否能成立。",
+            "step1": "确认 creator 的受众画像、内容平台、内容风格和过往转化案例。",
+            "step2": "把产品想法收敛成 1 个 hero product，不要同时开发太多款。",
+            "step3": "明确分工：creator 负责创意/内容/推广，DHgate 评估开发、样品、生产和履约。",
+            "talk": "For you, I’d think about this less as a normal store setup and more as a co-created product launch. The key is whether we can match your audience with one product idea that feels authentic to your brand.",
+        },
+        "Myyshop / Product Seeding": {
+            "angle": "品牌想做 KOL/KOC 曝光时，先确认样品、内容目标和 KOL 画像，避免泛泛寄样。",
+            "step1": "确认样品数量、目标平台、内容形式和目标 KOL/KOC 画像。",
+            "step2": "明确内容目标：曝光、测评、UGC、直播、转化，不能所有都要。",
+            "step3": "先做一小批 seeding，看内容质量和反馈，再决定是否扩大。",
+            "talk": "If your goal is creator content and exposure, I’d start with a controlled seeding test. We should define what kind of creators and what kind of content you actually want before sending samples out.",
+        },
+        "Sourcing Support": {
+            "angle": "Sourcing 型客户不要先推 MyyBiz，要先把商品、目标价、MOQ、定制边界问清楚。",
+            "step1": "让客户确认目标采购价、目标零售价、MOQ、交期和是否接受相似替代款。",
+            "step2": "Sourcing 只先找 2-3 个可比款/报价，避免一开始深度开发。",
+            "step3": "如果报价被客户接受，再讨论 MyyBiz 上架、CPS/CPL 或 Stripe。",
+            "talk": "It sounds like the first priority is sourcing, not a full marketing setup yet. I’d suggest we first validate whether we can find the right product at the right price and MOQ, then decide which sales channel makes sense.",
+        },
+        "Nurture / Self-service": {
+            "angle": "信息不足或资源不足时，保持关系，但不要投入高成本资源。",
+            "step1": "给客户一个低门槛任务：补 1 个产品方向、1 个销售渠道、1 个预算范围。",
+            "step2": "发送自助教程/爆品清单/案例，不安排 sourcing 深度开发。",
+            "step3": "等客户出现下单、预算、素材、店铺链接或明确需求后再升级。",
+            "talk": "I think it may be better to start lighter for now. If you can share a clearer product direction, rough budget, or current selling channel, I can better decide what resources are actually useful for you.",
+        },
+    }
+    cfg = route_config.get(route, route_config["Nurture / Self-service"])
+
+    if flags.get('compliance_sensitive'):
+        first_step = "先暂停渠道/投放/收款承诺，补合规材料并提交审批。"
+    elif evidence.startswith('Low'):
+        first_step = "先补可验证材料：店铺链接、销量截图、产品素材、预算范围或样品图。"
+    elif product_s < 55:
+        first_step = "先补商品信息：参考链接、目标价、MOQ、定制要求和交期。"
+    elif client_s < 55:
+        first_step = "先确认客户真实意愿：预算、决策人、销售记录和时间线。"
+    elif myybiz_s < 55:
+        first_step = "先确认客户到底是店主、affiliate、creator，还是只需要 sourcing。"
+    else:
+        first_step = cfg["step1"]
+
+    do_not = []
+    if evidence.startswith('Low'):
+        do_not.append("不要因为客户口述 GMV/粉丝/资源就直接给 A 类优先级。")
+    if flags.get('compliance_sensitive'):
+        do_not.append("审批前不要承诺 Stripe、CPC、CPS 放量或具体收益。")
+    if product_s < 55:
+        do_not.append("商品没讲清楚前，不要让 sourcing 团队做深度开发。")
+    if client_s < 55:
+        do_not.append("客户意愿/预算不清前，不要安排太多内部资源。")
+    if myybiz_s < 55:
+        do_not.append("不要强推 MyyBiz 全套功能，先判断客户真实角色。")
+    if not do_not:
+        do_not.append("不要一次性介绍所有产品线，只讲与客户当前痛点最相关的一条路径。")
+
+    return {
+        "priority": priority,
+        "route": route,
+        "angle": cfg["angle"],
+        "why": top_route.get("适配原因", "基于访谈信号和评分结果。"),
+        "first_step": first_step,
+        "next_steps": [first_step, cfg["step2"], cfg["step3"]],
+        "talk_track": cfg["talk"],
+        "strengths": snapshot["strengths"],
+        "risks": snapshot["risks"],
+        "do_not": do_not,
+    }
+
+
+def build_personalized_followup_questions(plan, missing):
+    base = []
+    route = plan.get('route','')
+    if "Sourcing" in route:
+        base = [
+            "Could you send 1-2 reference links or images so our sourcing team can match the exact style?",
+            "What target purchase price and first-order quantity would make this worth testing for you?",
+            "Which parts are must-have versus flexible — logo, packaging, material, size, or color?",
+        ]
+    elif "CPC" in route:
+        base = [
+            "What monthly test budget would feel comfortable for the first 7-14 days?",
+            "Which product would you want to push first, and what result would count as success for you?",
+            "Do you already have videos/images/landing page ready for paid traffic?",
+        ]
+    elif "CPL" in route:
+        base = [
+            "What does a qualified reseller/distributor look like for you?",
+            "Which regions or customer segments should we target first?",
+            "Who on your side will follow up with leads within 24-48 hours?",
+        ]
+    elif "CPS" in route or "Affiliate" in route:
+        base = [
+            "What commission range can your margin support after product and fulfillment cost?",
+            "How many samples can you provide for the first creator/affiliate test?",
+            "What creator profile fits your product best — platform, niche, audience, and content style?",
+        ]
+    elif "Co-Creation" in route:
+        base = [
+            "What product idea feels most authentic to your audience and personal brand?",
+            "Can you share your audience profile and best-performing content examples?",
+            "How involved do you want to be in design, sampling review, and launch promotion?",
+        ]
+    elif "Myyshop" in route:
+        base = [
+            "What content outcome matters most: UGC, review, unboxing, livestream, or conversion?",
+            "How many samples can you provide for the first seeding batch?",
+            "Which creator niche and platform are the best match for this product?",
+        ]
+    else:
+        base = [
+            "What is the one product/category you want to test first?",
+            "What channel are you currently using to reach customers?",
+            "What rough budget or resource can you commit to the first small test?",
+        ]
+
+    missing_qs = build_closing_confirmation(missing)
+    combined = base + [q for q in missing_qs if q not in base]
+    return combined[:6]
+
+
 # -----------------------------
 # 2) UI
 # -----------------------------
-st.title("🧭 Sourcing & Client Qualification Tool V6")
-st.caption("基于 Handbook + Live Conversation Toolkit 优化：自然访谈输入 → 后台信号抽取 → 更细颗粒度 benchmark 评分 → 路线推荐 → Missing Info → 推荐动作。")
+st.title("🧭 Sourcing & Client Qualification Tool V7")
+st.caption("基于 Handbook + Live Conversation Toolkit 优化：自然访谈输入 → 后台信号抽取 → benchmark 评分 → 路线推荐 → Missing Info → 个性化推荐动作与话术。")
 
-with st.expander("V6 逻辑说明", expanded=False):
+with st.expander("V7 逻辑说明", expanded=False):
     st.write(
         """
         - 合规 Red/Gray/Green 是硬闸门，不被分数覆盖。
         - 分数不是绝对真理，是为了让 BD / Sourcing / AM 对优先级有统一语言。
         - 新增 Evidence Level：如果客户只是口头说，没有截图/订单/GMV，综合分会打折，避免假高分。
         - V6 优化：评分选项从“好/一般/差”改成更具体的业务阈值，例如 GMV、订单量、粉丝/名单规模、预算区间、毛利率、响应时效、SKU 准备度。
+        - V7 优化：推荐动作不再只套模板，会根据客户 transcript 里的痛点、证据、短板、路线生成更个性化的 follow-up plan 和话术。
         - Route Recommendation：判断客户更适合 MyyBiz Store / CPC / CPL / CPS / Co-Creation / Myyshop / Sourcing / Nurture。
         """
     )
@@ -645,7 +867,7 @@ with st.expander("V6 逻辑说明", expanded=False):
 with st.expander("评分 Benchmark：不同人怎么选才一致", expanded=True):
     st.markdown(
         """
-        **V6 的原则：少用“好/一般/差”，多用能落地的阈值。**  
+        **V7 的原则：先用阈值统一判断，再结合客户信号生成个性化建议。**  
         使用者不需要手填 73、82 这种自由数字，而是选择最接近事实的 benchmark。
         例如：月 GMV、订单量、粉丝/名单规模、广告预算、毛利率、MOQ 与预算倍率、响应时间、SKU/素材准备度。
 
@@ -771,23 +993,60 @@ if interview_script.strip():
     st.download_button(
         "下载 transcript 自动预评分 CSV",
         auto_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name="interview_auto_scoring_result_v5.csv",
+        file_name="interview_auto_scoring_result_v7.csv",
         mime="text/csv",
     )
 
 st.info("建议用法：Transcript 自动评分只做 first pass。客户如果说有 GMV、粉丝、预算，但没有截图/链接/订单证明，系统会自动给证据折扣；最终推进前仍要人工确认。")
 
 if interview_script.strip():
-    st.subheader("V6 路线推荐：客户更适合哪条业务线？")
+    st.subheader("V7 路线推荐：客户更适合哪条业务线？")
     routes, flags = recommend_routes(interview_script, draft)
     route_df = pd.DataFrame(routes)
     st.dataframe(route_df, use_container_width=True, hide_index=True)
     top_route = routes[0]
+    present, missing = missing_info_from_transcript(interview_script)
+    plan = build_personalized_plan(top_route, flags, draft, present, missing)
     st.success(f"系统优先推荐：{top_route['推荐路线']}（适配分 {top_route['适配分']}/100）")
     st.write("**推荐原因：**", top_route["适配原因"])
-    st.write("**下一步动作：**", top_route["下一步动作"])
 
-    present, missing = missing_info_from_transcript(interview_script)
+    st.subheader("V7 个性化推荐动作")
+    pc1, pc2 = st.columns([1, 1])
+    with pc1:
+        st.markdown("**推荐推进策略**")
+        st.write(plan["priority"])
+        st.markdown("**这次沟通的角度**")
+        st.write(plan["angle"])
+        st.markdown("**第一步先做什么**")
+        st.write(plan["first_step"])
+    with pc2:
+        st.markdown("**客户强信号**")
+        if plan["strengths"]:
+            for item in plan["strengths"]:
+                st.write("✅ " + item)
+        else:
+            st.write("暂无明显强信号。")
+        st.markdown("**风险/短板**")
+        if plan["risks"]:
+            for item in plan["risks"]:
+                st.write("⚠️ " + item)
+        else:
+            st.write("暂无明显短板。")
+
+    with st.expander("推荐 next steps + 可直接使用的话术", expanded=True):
+        st.markdown("**建议 next steps**")
+        for step in plan["next_steps"]:
+            st.write("- " + step)
+        st.markdown("**Follow-up talk track**")
+        st.write(plan["talk_track"])
+        st.markdown("**这单暂时不要做什么**")
+        for item in plan["do_not"]:
+            st.write("- " + item)
+
+    st.subheader("个性化 follow-up questions")
+    for q in build_personalized_followup_questions(plan, missing):
+        st.write("- " + q)
+
     mcol1, mcol2 = st.columns(2)
     with mcol1:
         st.markdown("**已抓到的关键信息**")
