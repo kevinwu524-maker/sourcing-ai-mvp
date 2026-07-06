@@ -1,48 +1,50 @@
-# Sourcing AI MVP V7
+# Sourcing AI MVP V8.1
 
-V7 adds a more personalized recommendation layer on top of the V6 benchmark scoring.
+V8.1 keeps the built-in sample interview cases and adds project acknowledgements for Handbook and Live Conversation Toolkit contributors.
 
-## What changed in V7
+## Acknowledgements
 
-- Interview Analyzer still detects signals from natural call notes / transcript.
-- Route recommendation still compares MyyBiz Store, CPC, CPL, CPS/Affiliate, Co-Creation, Myyshop/Product Seeding, Sourcing Support, and Nurture.
-- New personalized recommendation block:
-  - recommended strategy
-  - customer strengths
-  - risks / shortfalls
-  - first next step
-  - route-specific next steps
-  - route-specific follow-up talk track
-  - things not to do yet
-  - personalized follow-up questions
+- Handbook input: Special thanks to Frank and Jack for their input on the DHgate MyyBiz SP Follow-up Handbook.
+- Live Conversation Toolkit input: Special thanks to Ouna for her input on the Live Conversation & Interview Toolkit.
 
-## Run locally
+These inputs helped shape the interview flow, scoring benchmarks, route recommendation, and personalized follow-up logic.
+
+## How to run
 
 ```bash
-cd ~/Downloads/sourcing_ai_mvp_v7
+cd sourcing_ai_mvp_v8
 python3 -m pip install -r requirements.txt
 python3 -m streamlit run app.py
 ```
 
-Then open:
+Open: http://localhost:8501
 
-```text
-http://localhost:8501
-```
+## What's new in V8
 
-## Deploy update
+- Built-in sample cases inside Step 0 Interview Analyzer.
+- Six fictional but realistic training cases:
+  - Shopify seller needing sourcing + affiliate growth
+  - Creator suitable for Co-Creation
+  - Brand suitable for Myyshop / Product Seeding
+  - Merchant suitable for CPL distributor lead gen
+  - Low-readiness client for Nurture / Self-service
+  - Gray compliance case requiring approval first
+- Expected route and training note included for each sample.
 
-Upload these files to the existing GitHub repo:
+## Files to upload to GitHub
 
+Upload:
 - app.py
 - requirements.txt
 - README.md
 - GRADING_BENCHMARK.md
 - INTERVIEW_SIGNAL_MAP.md
+- PERSONALIZED_ACTION_LOGIC.md
+- SAMPLE_CASES.md
+- ACKNOWLEDGEMENTS.md
 - data/
 
 Do not upload:
-
 - __pycache__
 - README_old.md
 - zip file

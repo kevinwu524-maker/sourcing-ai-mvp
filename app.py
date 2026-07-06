@@ -2,7 +2,51 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 
-st.set_page_config(page_title="Sourcing AI Scoring Tool V7", page_icon="🧭", layout="wide")
+st.set_page_config(page_title="Sourcing AI Scoring Tool V8", page_icon="🧭", layout="wide")
+
+
+
+# -----------------------------
+# V8 sample cases for onboarding and calibration
+# -----------------------------
+SAMPLE_CASES = {
+    "Case 1｜Shopify Seller：有销量，缺 sourcing + affiliate 增长": {
+        "expected_route": "Sourcing Support + MyyBiz CPS / Store",
+        "expected_level": "B+/A-，但需要补证据",
+        "transcript": """Client Name: HomeGlow Studio\nProduct Category: Home decor / LED mirror / room accessories\nInterview Date: Sample\n\nBD: Thanks for taking the time. Could you tell me a bit about what you're selling now and where you're selling it?\nClient: We sell home decor items, mostly LED mirrors and small room accessories. We currently sell through Shopify and TikTok Shop. Shopify is doing around $8,000 to $12,000 monthly GMV, TikTok Shop is smaller, maybe 40 to 60 orders a month.\nBD: What is your biggest challenge right now?\nClient: Sourcing is the biggest one. The price we get from our current supplier is not stable, and sometimes the quality is inconsistent. We also want to test creator promotion, but we are not sure what commission rate makes sense.\nBD: For the product you're looking for, is it existing product or custom?\nClient: Mostly existing product, but we want custom packaging and maybe our logo on the box. Target retail price is around $59 to $79. Ideally landed cost should be under $28. For first order, we can accept 300 units if the sample is good.\nBD: Are you running paid ads or influencer campaigns?\nClient: We spend around $500 to $1,000 per month on TikTok ads, but creator content performs better than ads. We can offer 12% to 18% commission if the margin works.\nBD: Do you have product images or videos ready?\nClient: Yes, we have Shopify product pages, photos, and some short videos. We can share the store link and sales screenshots after the call.\nBD: For growth, are you mainly looking to sell more through your store or through affiliates?\nClient: Both. We want to keep our own store, but also let creators sell with trackable links.\n""",
+        "training_note": "这个案例不应该只推 MyyBiz demo。第一步是 sourcing 验证：目标价、MOQ、样品、包装。验证后再推 CPS/affiliate。"
+    },
+    "Case 2｜Creator：强内容能力，无供应链，适合 Co-Creation": {
+        "expected_route": "Co-Creation",
+        "expected_level": "A-/B+，取决于受众和转化证据",
+        "transcript": """Client Name: Maya Lee\nProduct Category: Streetwear / lifestyle accessories\nInterview Date: Sample\n\nBD: Could you tell me a bit about your content and audience?\nClient: I create streetwear and lifestyle content. I have about 180,000 followers on TikTok and 62,000 on Instagram. My audience is mostly women 18 to 28 in the U.S. I post outfit videos, thrift flips, and product styling. My average TikTok video gets around 20,000 to 50,000 views, and some videos go over 300,000.\nBD: Have you sold your own products before?\nClient: Not my own product. I have done affiliate links and brand deals. I sold around 240 units for a bag brand last year through TikTok Shop affiliate, but I don't want to handle inventory or shipping myself.\nBD: Do you have a product idea you would want to create?\nClient: Yes, I want to create a small capsule: a crossbody bag or phone charm line with my own color palette and packaging. I can create content, do launch videos, livestreams, and styling content.\nBD: Do you have a team or budget for product development?\nClient: I don't have budget for inventory, but I can commit content and promotion if the product fits my audience. I can also provide design references and mood boards.\nBD: What would make this collaboration successful for you?\nClient: I want it to feel like my own brand, not just a random dropship product. I care about design, packaging, and story.\n""",
+        "training_note": "这个客户不是普通 merchant。不要先推独立站建站，应先确认受众、内容能力、产品创意、样品反馈和分佣方式。"
+    },
+    "Case 3｜Brand：有产品，想要 KOL/KOC 种草，适合 Myyshop / Product Seeding": {
+        "expected_route": "Myyshop / Product Seeding + CPS later",
+        "expected_level": "B，先小范围 seeding",
+        "transcript": """Client Name: PureSip Bottle\nProduct Category: Water bottle / outdoor lifestyle\nInterview Date: Sample\n\nBD: What are you currently selling and where are you selling it?\nClient: We sell reusable water bottles and outdoor drinkware. We have our own Shopify site and Amazon listing. Amazon does most of the sales, around $15,000 monthly revenue. Shopify is smaller.\nBD: What's your biggest challenge right now?\nClient: Traffic and awareness. The product is good, reviews are good, but we don't have enough creator content. Ads are getting expensive. We want more UGC, reviews, unboxing videos, and maybe micro influencers.\nBD: Do you need sourcing support?\nClient: Not right now. We already have inventory in the U.S. We can provide 100 to 150 samples for creators over the next two months.\nBD: Are you looking for sales conversion or more content exposure?\nClient: First content exposure and product seeding. If some creators perform well, we can set up affiliate commission. We can offer 10% commission after the first test.\nBD: Do you have product assets ready?\nClient: Yes, we have product images, videos, Amazon reviews, and a media kit.\n""",
+        "training_note": "这个不是 sourcing case。核心是 seeding/UGC/KOL 内容测试，第一阶段不要承诺大规模 GMV，应先定义 creator profile、样品数量和内容交付。"
+    },
+    "Case 4｜Merchant：想招代理/分销商，适合 CPL": {
+        "expected_route": "MyyBiz CPL / Distributor Lead Gen",
+        "expected_level": "B，先跑 lead test",
+        "transcript": """Client Name: FitPro Wholesale\nProduct Category: Fitness accessories / resistance bands\nInterview Date: Sample\n\nBD: Tell me a bit about your current business.\nClient: We sell fitness accessories, mainly resistance bands, yoga straps, and small gym accessories. We sell wholesale to local gyms and small retailers. We have a website but it is more like a catalog, not a strong ecommerce store.\nBD: What are you trying to improve next?\nClient: We want to find more resellers and local distributors, especially in California and Texas. Direct consumer sales are not our priority. We need qualified leads, not just traffic.\nBD: Do you have products and pricing ready?\nClient: Yes, we have a wholesale price list, MOQ by SKU, product photos, and shipping terms. We have around 30 SKUs.\nBD: Are you open to paid campaigns?\nClient: We can test $1,000 first if the leads are relevant. We don't want to pay for random clicks, but we can pay for qualified reseller leads.\nBD: What is a good lead for you?\nClient: Gym owners, fitness studios, sports stores, and small distributors. They should have a business email or store information.\n""",
+        "training_note": "这个客户的痛点不是普通 CPS，也不是 creator co-creation。关键词是 reseller/distributor/qualified leads，因此优先 CPL。"
+    },
+    "Case 5｜Low readiness：只有想法，缺产品/预算/渠道，需要 Nurture": {
+        "expected_route": "Nurture / Self-service",
+        "expected_level": "D/E",
+        "transcript": """Client Name: New Starter\nProduct Category: General beauty / trending products\nInterview Date: Sample\n\nBD: What are you currently selling?\nClient: I haven't started yet. I want to sell beauty products because I see a lot of people making money online.\nBD: Do you have a product in mind?\nClient: Not really. Maybe skincare, makeup tools, or something trending on TikTok. I want to see what you can recommend.\nBD: Where are you planning to sell?\nClient: Maybe TikTok or Instagram. I don't have a website yet. I have about 500 followers on Instagram but I don't post much.\nBD: Do you have budget for samples, first order, or ads?\nClient: I prefer not to spend money first. I want to test for free if possible.\nBD: Do you have any sales history or customer list?\nClient: No, this would be my first time.\nBD: Are you interested in MyyBiz or affiliate?\nClient: Maybe, but I don't really know how it works. I just want something easy to make money.\n""",
+        "training_note": "这个案例不能因为客户感兴趣就推进。建议发自助教程/爆品清单/教育材料，不进入 sourcing queue。"
+    },
+    "Case 6｜Gray Compliance：功效护肤/减肥宣称，先审批": {
+        "expected_route": "Compliance Review first; CPL only if approved",
+        "expected_level": "业务潜力可中高，但合规优先",
+        "transcript": """Client Name: GlowFast Lab\nProduct Category: Skincare / body slimming cream\nInterview Date: Sample\n\nBD: What product are you looking to promote?\nClient: We have a body slimming cream and whitening serum. The product page says it can reduce belly fat in 14 days and remove dark spots quickly. We want to run ads and find affiliates to sell it.\nBD: Where are you currently selling?\nClient: We sell through our Shopify store and WhatsApp groups. Monthly revenue is around $6,000, mostly from repeat customers.\nBD: Do you have certificates or ingredient documents?\nClient: We have ingredient list from the supplier, but no U.S. clinical test. We can edit the claims if needed.\nBD: Are you looking for CPC, CPS, or CPL?\nClient: We want CPC ads and affiliates, but if that is difficult, we can start with lead generation.\nBD: Do you have budget?\nClient: Around $800 for testing.\n""",
+        "training_note": "这个客户不能直接按高商业价值推进。功效、减肥、美白等宣称必须先合规审批，审批前不建议 CPC/CPS/Stripe。"
+    }
+}
 
 # -----------------------------
 # 1) Rule settings: compliance gate
@@ -847,10 +891,21 @@ def build_personalized_followup_questions(plan, missing):
 # -----------------------------
 # 2) UI
 # -----------------------------
-st.title("🧭 Sourcing & Client Qualification Tool V7")
-st.caption("基于 Handbook + Live Conversation Toolkit 优化：自然访谈输入 → 后台信号抽取 → benchmark 评分 → 路线推荐 → Missing Info → 个性化推荐动作与话术。")
+st.title("🧭 Sourcing & Client Qualification Tool V8.1")
+st.caption("基于 Handbook + Live Conversation Toolkit 优化：自然访谈输入 → 后台信号抽取 → benchmark 评分 → 路线推荐 → Missing Info → 个性化推荐动作与话术。V8 新增 sample cases，方便员工练习和校准判断。V8.1 增加项目致谢。")
 
-with st.expander("V7 逻辑说明", expanded=False):
+
+with st.expander("项目致谢 Acknowledgements", expanded=False):
+    st.markdown(
+        """
+        - **Handbook input:** Special thanks to **Frank** and **Jack** for their input on the DHgate MyyBiz SP Follow-up Handbook.
+        - **Live Conversation Toolkit input:** Special thanks to **Ouna** for her input on the Live Conversation & Interview Toolkit.
+
+        These inputs helped shape the tool's interview flow, scoring benchmarks, route recommendation, and personalized follow-up logic.
+        """
+    )
+
+with st.expander("V8 逻辑说明", expanded=False):
     st.write(
         """
         - 合规 Red/Gray/Green 是硬闸门，不被分数覆盖。
@@ -858,6 +913,7 @@ with st.expander("V7 逻辑说明", expanded=False):
         - 新增 Evidence Level：如果客户只是口头说，没有截图/订单/GMV，综合分会打折，避免假高分。
         - V6 优化：评分选项从“好/一般/差”改成更具体的业务阈值，例如 GMV、订单量、粉丝/名单规模、预算区间、毛利率、响应时效、SKU 准备度。
         - V7 优化：推荐动作不再只套模板，会根据客户 transcript 里的痛点、证据、短板、路线生成更个性化的 follow-up plan 和话术。
+        - V8 新增：内置 6 个 sample interview cases，覆盖 Seller / Creator / Brand / Distributor / Nurture / Gray compliance，帮助新员工练习判断。
         - Route Recommendation：判断客户更适合 MyyBiz Store / CPC / CPL / CPS / Co-Creation / Myyshop / Sourcing / Nurture。
         """
     )
@@ -920,10 +976,22 @@ st.divider()
 
 st.header("Step 0：Interview Analyzer 自动预评分 + 路线推荐（可选）")
 st.caption("把客户访谈记录、call transcript、聊天记录粘进来，系统会先给 draft score，并推荐更适合 MyyBiz Store / CPC / CPL / CPS / Co-Creation / Myyshop / Sourcing / Nurture 哪条路线。这个结果适合做初筛，最终仍建议 BD/Sourcing 人工复核。")
+
+with st.expander("没有真实案例？加载 Sample Case 给员工练习", expanded=False):
+    sample_name = st.selectbox("选择一个练习案例", list(SAMPLE_CASES.keys()), key="sample_case_select")
+    selected_sample = SAMPLE_CASES[sample_name]
+    st.write("**Expected Route：**", selected_sample["expected_route"])
+    st.write("**Expected Level：**", selected_sample["expected_level"])
+    st.write("**Training Note：**", selected_sample["training_note"])
+    if st.button("加载这个案例到 Interview Analyzer", key="load_sample_case"):
+        st.session_state["interview_script_input"] = selected_sample["transcript"]
+        st.rerun()
+
 interview_script = st.text_area(
     "粘贴 Interview Script / Call Notes / Chat Record",
     placeholder="例如：客户说自己在 Shopify 卖家居品类，月 GMV 约 $8,000，有产品图和视频，愿意先做小额广告测试，需要找轻定制包装，接受 300 MOQ，希望做 affiliate commission...",
     height=180,
+    key="interview_script_input",
 )
 
 if interview_script.strip():
@@ -993,14 +1061,14 @@ if interview_script.strip():
     st.download_button(
         "下载 transcript 自动预评分 CSV",
         auto_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name="interview_auto_scoring_result_v7.csv",
+        file_name="interview_auto_scoring_result_v8.csv",
         mime="text/csv",
     )
 
 st.info("建议用法：Transcript 自动评分只做 first pass。客户如果说有 GMV、粉丝、预算，但没有截图/链接/订单证明，系统会自动给证据折扣；最终推进前仍要人工确认。")
 
 if interview_script.strip():
-    st.subheader("V7 路线推荐：客户更适合哪条业务线？")
+    st.subheader("V8 路线推荐：客户更适合哪条业务线？")
     routes, flags = recommend_routes(interview_script, draft)
     route_df = pd.DataFrame(routes)
     st.dataframe(route_df, use_container_width=True, hide_index=True)
@@ -1010,7 +1078,7 @@ if interview_script.strip():
     st.success(f"系统优先推荐：{top_route['推荐路线']}（适配分 {top_route['适配分']}/100）")
     st.write("**推荐原因：**", top_route["适配原因"])
 
-    st.subheader("V7 个性化推荐动作")
+    st.subheader("V8 个性化推荐动作")
     pc1, pc2 = st.columns([1, 1])
     with pc1:
         st.markdown("**推荐推进策略**")
