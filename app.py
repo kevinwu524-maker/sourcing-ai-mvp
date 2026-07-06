@@ -4,7 +4,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Client Profile & Route Recommender V9", page_icon="🧭", layout="wide")
+st.set_page_config(page_title="Client Profile & Route Recommender V10", page_icon="🧭", layout="wide")
 
 # -----------------------------
 # Lightweight styling
@@ -37,6 +37,14 @@ RED_KEYWORDS = [
 GRAY_KEYWORDS = [
     "保健品", "膳食补剂", "补剂", "减肥", "瘦身", "美容仪", "微整", "医疗器械", "成人向", "不露骨",
     "烟具配件", "博彩娱乐周边", "功效护肤", "祛痘", "美白", "抗衰", "丰胸", "medical", "health claim", "slimming", "whitening",
+]
+
+ECOMMERCE_SCOPE_KEYWORDS = [
+    "product", "products", "sku", "store", "shopify", "amazon", "etsy", "tiktok shop", "website", "order", "orders", "gmv",
+    "sales", "revenue", "customer", "supplier", "factory", "sourcing", "moq", "retail", "wholesale", "reseller",
+    "distributor", "affiliate", "commission", "creator", "influencer", "kol", "koc", "ads", "traffic", "sample", "seeding",
+    "产品", "商品", "品类", "店铺", "独立站", "订单", "销售", "销量", "供应商", "工厂", "寻源", "采购", "起订量",
+    "毛利", "零售价", "分销", "代理", "经销商", "佣金", "达人", "网红", "广告", "流量", "寄样", "种草", "素材"
 ]
 
 SAMPLE_CASES = {
@@ -123,6 +131,7 @@ ROUTE_DESCRIPTIONS = {
     "MyyBiz CPS / Affiliate": "客户想让达人、affiliate 或分销员按销售拿佣金。必须确认佣金空间和样品能力。",
     "Co-Creation": "客户偏 creator，有内容/受众/创意，但不想承担库存和履约。适合共同开发产品。",
     "Myyshop / Product Seeding": "品牌/商家已有产品，希望通过 KOL/KOC 寄样、UGC、review、unboxing 增加曝光。",
+    "Myyshop / KOL-KOC Seeding / UGC Exposure": "品牌/商家已有产品，希望通过 KOL/KOC 寄样、UGC、review、unboxing 增加曝光。",
     "Nurture / Self-service": "客户资源或信息不足，不适合深度投入。先教育、低频跟进，等明确行为信号。",
     "Compliance Review": "命中灰色/敏感风险。先审批，审批前不要承诺投放、收款或转化结果。",
     "Reject / Red Line": "红线类目，不推进任何渠道。",
@@ -602,9 +611,27 @@ Internal Next Steps
     return note
 
 
+def detect_scope(text, flags):
+    hits = keyword_hit(text, ECOMMERCE_SCOPE_KEYWORDS)
+    strong_flags = [
+        "merchant", "has_sales", "has_product", "needs_sourcing", "needs_traffic",
+        "wants_affiliate", "wants_distributor", "wants_seeding", "has_moq_price",
+        "has_materials", "strong_audience"
+    ]
+    signal_count = sum(1 for k in strong_flags if flags.get(k))
+    if len((text or "").strip()) < 80:
+        return "Low", hits[:8], "输入内容较短，系统很难判断客户是否属于电商/分销相关场景。"
+    if signal_count >= 3 or len(hits) >= 4:
+        return "High", hits[:8], "已识别到较明显的电商/分销业务信号。"
+    if signal_count >= 1 or len(hits) >= 2:
+        return "Medium", hits[:8], "识别到部分电商相关信号，但信息仍不完整。"
+    return "Low", hits[:8], "没有识别到明显的商品、销售渠道、GMV、供应链、分销或推广信号。"
+
+
 def analyze_text(text, manual_compliance="Auto"):
     compliance, hits = compliance_level(text, manual_compliance)
     flags = detect_flags(text)
+    scope_level, scope_hits, scope_reason = detect_scope(text, flags)
     present, missing = missing_info(text)
     product_s, client_s, channel_s, raw = score_from_flags(flags)
     evidence, multiplier = evidence_level(flags)
@@ -619,6 +646,9 @@ def analyze_text(text, manual_compliance="Auto"):
         "compliance": compliance,
         "compliance_hits": hits,
         "flags": flags,
+        "scope_level": scope_level,
+        "scope_hits": scope_hits,
+        "scope_reason": scope_reason,
         "present": present,
         "missing": missing,
         "scores": {"Product/Sourcing": product_s, "Client Value": client_s, "Channel Fit": channel_s, "Raw": raw, "Adjusted": adjusted},
@@ -656,11 +686,17 @@ def render_results(result, evaluator="", client_code=""):
         unsafe_allow_html=True,
     )
 
+    if result.get("scope_level") == "Low":
+        st.warning("系统没有识别到明显的电商/分销业务信号，本次分析置信度较低。请先确认该客户是否属于电商卖家、品牌方、创作者或分销相关客户；如果不是，请不要直接使用系统生成的客户画像和 follow-up 文案。")
+    elif result.get("scope_level") == "Medium":
+        st.info("系统只识别到部分电商/分销业务信号。建议补充品类、销售渠道、订单/GMV、预算、供应链需求或推广目标后再做最终判断。")
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Priority", result["priority"])
-    c2.metric("Confidence", result["confidence"])
-    c3.metric("Evidence", result["evidence"])
-    c4.metric("Adjusted Score", result["scores"]["Adjusted"])
+    c1.metric("Priority", result["priority"], help="A/B：优先推进；C：先验证信息；D/E：暂缓或低频跟进；Compliance/Reject：先按合规处理。")
+    c2.metric("Confidence", result["confidence"], help="系统对本次判断的把握程度。信息越完整、证据越多，置信度越高。")
+    c3.metric("Evidence", result["evidence"], help="High：有截图/订单/后台/店铺链接；Medium：口述 + 部分材料；Low：只有口述。")
+    c4.metric("Adjusted Score", result["scores"]["Adjusted"], help="0–100 分，越高越适合进入下一步。Adjusted Score 会根据信息缺失、证据强弱和合规风险做保守调整。")
+    st.caption("评分说明：0–100 分；A/B=优先推进，C=先补关键信息，D/E=暂缓或轻量跟进。Raw 是原始分，Adjusted 会因证据不足或信息缺失而下调。")
 
     st.subheader("Client Profile 客户画像")
     render_profile(result["profile"])
@@ -690,7 +726,8 @@ def render_results(result, evaluator="", client_code=""):
         for q in result["questions"]:
             st.write("- " + q)
 
-    with st.expander("Scoring Details（评分细节，给 manager/复核用）", expanded=False):
+    with st.expander("Scoring Details（评分细节，可选查看）", expanded=False):
+        st.caption("Raw Score 是系统根据访谈内容直接计算出的原始分数；Adjusted Score 会根据证据强弱、合规风险、信息缺失程度保守调整。客户口头描述很多但缺少证明时，最终分数会被下调。")
         score_df = pd.DataFrame([
             {"Dimension": "Product / Sourcing", "Score": result["scores"]["Product/Sourcing"]},
             {"Dimension": "Client Value", "Score": result["scores"]["Client Value"]},
@@ -703,19 +740,28 @@ def render_results(result, evaluator="", client_code=""):
             st.write("Compliance hits:", ", ".join(result["compliance_hits"]))
         st.write("Detected signals:")
         signal_tags = [k for k, v in result["flags"].items() if isinstance(v, bool) and v]
-        st.markdown(" ".join([f"<span class='chip'>{s}</span>" for s in signal_tags]), unsafe_allow_html=True)
+        if signal_tags:
+            st.markdown(" ".join([f"<span class='chip'>{s}</span>" for s in signal_tags]), unsafe_allow_html=True)
+        else:
+            st.caption("系统暂未识别到足够明确的业务信号。建议补充客户的品类、销售渠道、月订单/GMV、预算、供应链需求或推广目标后再判断。")
 
-    st.subheader("Human Final Review")
+    st.subheader("Human Final Review 人工最终确认")
+    st.caption("如果选择 Partially agree 或 Disagree，请同时确认 Human Final Route。最终导出的路线以 Human Final Route 为准。")
     c1, c2 = st.columns(2)
     with c1:
-        agree = st.radio("Do you agree with the system recommendation?", ["Agree", "Partially agree", "Disagree"], horizontal=True, key="agree_radio")
+        agree = st.radio("你是否同意系统推荐？", ["Agree", "Partially agree", "Disagree"], horizontal=True, key="agree_radio")
+    route_options = ["Use system recommendation", "Sourcing Support", "MyyBiz Store", "MyyBiz CPC", "MyyBiz CPL", "MyyBiz CPS / Affiliate", "Co-Creation", "Myyshop / KOL-KOC Seeding / UGC Exposure", "Nurture / Self-service", "Compliance Review", "Reject / Red Line"]
     with c2:
         final_route = st.selectbox(
-            "Human Final Route",
-            ["Use system recommendation", "Sourcing Support", "MyyBiz Store", "MyyBiz CPC", "MyyBiz CPL", "MyyBiz CPS / Affiliate", "Co-Creation", "Myyshop / Product Seeding", "Nurture / Self-service", "Compliance Review", "Reject / Red Line"],
+            "Human Final Route 最终跟进路线",
+            route_options,
             key="final_route",
         )
-    human_reason = st.text_area("Reason for override / notes", placeholder="Example: System recommended CPS, but margin is not confirmed yet, so final route should be Sourcing Support first.", key="human_reason")
+    if agree == "Partially agree" and final_route == "Use system recommendation":
+        st.warning("你选择了部分同意。请确认是否需要调整最终路线；如果不调整，导出会继续使用系统推荐路线。")
+    if agree == "Disagree" and final_route == "Use system recommendation":
+        st.error("你已选择不同意系统推荐，请重新选择 Human Final Route，否则导出记录会前后矛盾。")
+    human_reason = st.text_area("Override reason / notes 调整原因", placeholder="例：系统推荐 CPS，但佣金和毛利还没确认，所以先走 Sourcing Support。", key="human_reason")
 
     note = crm_note(result["profile"], result["route"], result["priority"], result["confidence"], result["internal"], result["client_msg"], result["missing"], final_route, human_reason)
     st.subheader("Copy-ready CRM Note")
@@ -740,27 +786,32 @@ def render_results(result, evaluator="", client_code=""):
         "crm_note": note,
     }
     export_df = pd.DataFrame([export_row])
-    st.download_button(
-        "Download Result CSV",
-        export_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name="client_profile_result_v9.csv",
-        mime="text/csv",
-    )
+    if agree == "Disagree" and final_route == "Use system recommendation":
+        st.button("Download Result CSV", disabled=True, help="请先选择新的 Human Final Route。")
+    else:
+        st.download_button(
+            "Download Result CSV",
+            export_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="client_profile_result_v10.csv",
+            mime="text/csv",
+        )
 
 # -----------------------------
 # Sidebar / navigation
 # -----------------------------
 st.sidebar.title("🧭 Start Here")
+st.sidebar.info("有访谈/聊天记录用 1；没有完整记录、只想快速判断用 2；3 是新员工练习；4 是查标准和致谢，不是日常主流程。")
 mode = st.sidebar.radio(
     "你现在想做什么？",
     ["1｜Analyze Interview", "2｜Quick Assessment", "3｜Training Sample", "4｜Benchmark / Credits"],
 )
 
 st.sidebar.markdown("---")
-st.sidebar.caption("V9 focuses on employee-friendly workflow: profile first, action second, score last.")
+st.sidebar.caption("V10 focuses on clearer scope, transparent scoring, compliance help, and safer human review.")
 
-st.title("Client Profile & Route Recommender V9")
+st.title("Client Profile & Route Recommender V10")
 st.caption("自然访谈输入 → 自动生成客户画像 → 推荐路线 → 内部动作 → 客户 follow-up → 人工最终确认。")
+st.info("入口说明：① 有客户访谈/聊天记录时用 Analyze Interview；② 没有完整记录时用 Quick Assessment；③ Training Sample 只用于练习；④ Benchmark / Credits 用于查标准和项目致谢。")
 
 # Shared metadata
 with st.expander("Case Info（可选，用于导出和团队收集）", expanded=False):
@@ -772,7 +823,13 @@ with st.expander("Case Info（可选，用于导出和团队收集）", expanded
 if mode == "1｜Analyze Interview":
     st.header("1｜Analyze Interview / Call Notes")
     st.write("把 interview transcript、call notes 或 WhatsApp 聊天记录粘进来。员工不需要先理解评分，先看客户画像和下一步动作。")
-    manual = st.selectbox("Compliance Override（可选）", ["Auto", "Green / normal", "Gray / needs approval", "Red / not allowed"])
+    st.info("适用范围：本工具主要适用于电商卖家、品牌方、分销商、创作者/KOL/KOC、独立站或平台卖家等客户画像分析。如果访谈内容与商品、销售渠道、流量、GMV、供应链、分销、达人推广等无关，系统结果可能不适合直接使用。")
+    manual = st.selectbox("Compliance Override（可选）", ["Auto", "Green / normal", "Gray / needs approval", "Red / not allowed"], help="默认建议使用 Auto；只有当你确认系统误判，或你掌握额外合规信息时，才需要手动调整。")
+    with st.expander("Compliance Override 选项说明", expanded=False):
+        st.write("- Auto：使用系统自动判断；没有额外信息时建议保持 Auto。")
+        st.write("- Green / normal：常规可推进品类，没有明显红线或审批风险。")
+        st.write("- Gray / needs approval：有一定风险，需先内部确认或审批后再推进。")
+        st.write("- Red / not allowed：红线品类，不进入付款、广告或 sourcing 流程。")
     text = st.text_area("Paste Interview / Call Notes", height=300, placeholder="Paste interview notes here...")
     if st.button("Generate Client Profile", type="primary"):
         if not text.strip():
@@ -789,9 +846,9 @@ elif mode == "2｜Quick Assessment":
         q_product = st.text_input("产品/品类", placeholder="home decor, skincare, water bottle...")
         q_channel = st.multiselect("现在在哪些渠道卖/触达客户？", ["Shopify", "Amazon", "TikTok Shop", "Etsy", "Own website", "Offline", "WhatsApp/Community", "Instagram/TikTok content", "Not selling yet"])
         q_scale = st.selectbox("生意规模", ["Not confirmed", "No sales yet", "Test orders only", "Monthly GMV $1k-$5k", "Monthly GMV $5k-$20k", "Monthly GMV $20k+"])
-        q_pain = st.multiselect("最大痛点", ["Sourcing", "Traffic / ads", "Affiliate / creator sales", "Distributor / reseller leads", "KOL/KOC seeding", "Store setup", "Conversion", "Logistics", "Not clear"])
+        q_pain = st.multiselect("最大痛点", ["Sourcing", "Traffic / ads", "Creator Affiliate Sales / CPS", "Distributor / reseller leads", "KOL/KOC Seeding / UGC Exposure", "Store setup", "Conversion", "Logistics", "Not clear"], help="Seeding 更偏寄样/内容曝光；Affiliate Sales 更偏按成交分佣。")
         q_readiness = st.multiselect("已经准备好的东西", ["Product/SKU", "Inventory", "Product photos/videos", "Store link", "Sales screenshot", "Target price/MOQ", "Marketing budget", "Commission range", "Samples for creators", "None"])
-        q_compliance = st.selectbox("合规判断", ["Auto", "Green / normal", "Gray / needs approval", "Red / not allowed"])
+        q_compliance = st.selectbox("合规判断", ["Auto", "Green / normal", "Gray / needs approval", "Red / not allowed"], help="默认用 Auto；只有你掌握额外合规信息时再手动改。")
         submitted = st.form_submit_button("Generate Quick Profile")
     if submitted:
         synthetic = f"""
@@ -813,7 +870,7 @@ elif mode == "3｜Training Sample":
     st.markdown(f"**Training Note:** {case['note']}")
     with st.expander("View Sample Interview", expanded=True):
         st.text_area("Sample transcript", value=case["text"], height=260)
-    guess = st.selectbox("你觉得这个客户最适合哪条路线？", ["Sourcing Support", "MyyBiz Store", "MyyBiz CPC", "MyyBiz CPL", "MyyBiz CPS / Affiliate", "Co-Creation", "Myyshop / Product Seeding", "Nurture / Self-service", "Compliance Review", "Reject / Red Line"])
+    guess = st.selectbox("你觉得这个客户最适合哪条路线？", ["Sourcing Support", "MyyBiz Store", "MyyBiz CPC", "MyyBiz CPL", "MyyBiz CPS / Affiliate", "Co-Creation", "Myyshop / KOL-KOC Seeding / UGC Exposure", "Nurture / Self-service", "Compliance Review", "Reject / Red Line"])
     if st.button("Show System Analysis", type="primary"):
         st.info(f"Expected training route: {case['expected']}")
         result = analyze_text(case["text"], "Auto")
