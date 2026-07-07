@@ -1389,6 +1389,157 @@ def csv_bytes(row: Dict[str, str]) -> bytes:
     return output.getvalue().encode("utf-8-sig")
 
 # ============================================================
+# 客户档案存储（双后端）
+# 云端：配置 SUPABASE_URL + SUPABASE_SERVICE_KEY 后自动启用，永久保存。
+# 本地：未配置时落本地JSON——本地运行=永久；Streamlit Cloud磁盘为临时存储，
+# 应用重启/休眠/重新部署会清空，页面上会明示。
+# ============================================================
+
+_APP_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
+RECORDS_DIR = os.path.join(_APP_DIR, "client_records")
+MAX_VERSIONS_PER_CLIENT = 20
+SUPABASE_TABLE = "client_records"
+
+
+def _secret(name: str) -> Optional[str]:
+    val = os.environ.get(name)
+    if val:
+        return val
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
+def _supabase_cfg() -> Optional[Tuple[str, str]]:
+    url = _secret("SUPABASE_URL")
+    key = _secret("SUPABASE_SERVICE_KEY") or _secret("SUPABASE_KEY")
+    if url and key:
+        return url.rstrip("/"), key
+    return None
+
+
+def storage_status() -> Tuple[str, str]:
+    """返回 (backend, 给用户看的说明)。"""
+    if _supabase_cfg():
+        return "supabase", "☁️ 云端存储（Supabase）已连接，档案永久保存。"
+    return "local", "⚠️ 当前为本地临时存储：本地运行可永久保存；部署在Streamlit Cloud时，应用重启/休眠会清空档案。要云端永久保存请在Secrets配置 SUPABASE_URL 和 SUPABASE_SERVICE_KEY。"
+
+
+def _sb_request(method: str, path: str, **kwargs):
+    import requests
+    url, key = _supabase_cfg()
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    headers.update(kwargs.pop("headers", {}))
+    resp = requests.request(method, f"{url}/rest/v1/{path}", headers=headers, timeout=15, **kwargs)
+    resp.raise_for_status()
+    return resp
+
+
+def _safe_client_code(code: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_\-]", "_", (code or "").strip())[:60]
+    return cleaned or f"client_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+
+def _record_path(code: str) -> str:
+    return os.path.join(RECORDS_DIR, f"{code}.json")
+
+
+def _append_version(record: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    snapshot["saved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    record["versions"] = (record.get("versions", []) + [snapshot])[-MAX_VERSIONS_PER_CLIENT:]
+    record.setdefault("notes", [])
+    record["updated_at"] = snapshot["saved_at"]
+    return record
+
+
+def save_client_record(client_code: str, snapshot: Dict[str, Any]) -> str:
+    """把一次分析快照存入客户档案；同一客户编号追加为新版本。返回实际使用的客户编号。"""
+    code = _safe_client_code(client_code)
+    record = load_client_record(code) or {"client_code": code, "versions": [], "notes": []}
+    _append_version(record, snapshot)
+    write_client_record(record)
+    return code
+
+
+def write_client_record(record: Dict[str, Any]) -> None:
+    record["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if _supabase_cfg():
+        _sb_request(
+            "POST", SUPABASE_TABLE,
+            headers={"Prefer": "resolution=merge-duplicates"},
+            json=[{"client_code": record["client_code"], "record": record, "updated_at": datetime.now().isoformat()}],
+        )
+        return
+    os.makedirs(RECORDS_DIR, exist_ok=True)
+    with open(_record_path(record["client_code"]), "w", encoding="utf-8") as f:
+        json.dump(record, f, ensure_ascii=False, indent=1)
+
+
+def load_client_record(code: str) -> Optional[Dict[str, Any]]:
+    code = _safe_client_code(code)
+    if _supabase_cfg():
+        try:
+            rows = _sb_request("GET", f"{SUPABASE_TABLE}?client_code=eq.{code}&select=record").json()
+            return rows[0]["record"] if rows else None
+        except Exception:
+            return None
+    path = _record_path(code)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _record_summary(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not rec or not rec.get("versions"):
+        return None
+    latest = rec["versions"][-1]
+    tasks = latest.get("tasks", [])
+    done = sum(1 for t in tasks if t.get("状态") == "已完成")
+    return {
+        "客户编号": rec["client_code"],
+        "更新时间": rec.get("updated_at", ""),
+        "客户类型": latest.get("客户类型", ""),
+        "合规档": latest.get("合规档", ""),
+        "价值档": latest.get("价值档", ""),
+        "下一步板块": latest.get("下一步板块", ""),
+        "进度": f"{done}/{len(tasks)}" if tasks else "-",
+        "版本数": len(rec["versions"]),
+    }
+
+
+def list_client_records() -> List[Dict[str, Any]]:
+    """返回所有客户档案的摘要行，按最近更新倒序。"""
+    rows: List[Dict[str, Any]] = []
+    if _supabase_cfg():
+        try:
+            data = _sb_request("GET", f"{SUPABASE_TABLE}?select=record&order=updated_at.desc").json()
+            for row in data:
+                s = _record_summary(row.get("record") or {})
+                if s:
+                    rows.append(s)
+            return rows
+        except Exception:
+            return []
+    if not os.path.isdir(RECORDS_DIR):
+        return []
+    for fn in os.listdir(RECORDS_DIR):
+        if fn.endswith(".json"):
+            s = _record_summary(load_client_record(fn[:-5]))
+            if s:
+                rows.append(s)
+    rows.sort(key=lambda r: r["更新时间"], reverse=True)
+    return rows
+
+# ============================================================
 # Streamlit UI
 # ============================================================
 
@@ -1405,7 +1556,7 @@ with st.expander("适用范围说明｜请先看", expanded=True):
 
 entry = st.radio(
     "请选择你现在要做什么：",
-    ["1｜Analyze Interview：我有访谈/聊天记录", "2｜Quick Assessment：我没有完整记录，只想快速判断", "3｜Benchmark：查看评分口径"],
+    ["1｜Analyze Interview：我有访谈/聊天记录", "2｜Quick Assessment：我没有完整记录，只想快速判断", "3｜Benchmark：查看评分口径", "4｜客户档案：查看与跟进已保存客户"],
     horizontal=True,
 )
 
@@ -1548,6 +1699,7 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
     st.caption(f"Checklist按板块优先级排序：{board_priority['headline']}")
     status_options = ["待跟进", "进行中", "已完成"]
     checklist_status = []
+    tasks_snapshot = []
     for idx, task in enumerate(tasks):
         cols = st.columns([1.2, 1.2, 4, 1.2])
         cols[0].write(task["服务"])
@@ -1555,6 +1707,7 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
         cols[2].write(task["任务"])
         status = cols[3].selectbox("状态", status_options, index=status_options.index(task["状态"]), key=f"task_status_{source_label}_{idx}", label_visibility="collapsed")
         checklist_status.append(f"{task['服务']}-{task['阶段']}:{status}")
+        tasks_snapshot.append({"服务": task["服务"], "阶段": task["阶段"], "任务": task["任务"], "状态": status})
     checklist_summary = "；".join(checklist_status)
 
     with st.expander("按痛点的沟通话术（内部动作 / 对客户说的动作）", expanded=False):
@@ -1660,6 +1813,35 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
     else:
         st.button("下载CSV（需先完成Human Final Route）", disabled=True)
 
+    st.markdown("#### 💾 客户档案")
+    st.caption("把本次分析（画像、三轴、checklist进度、待客户提供、原始访谈）存入客户档案；同一客户编号会追加为新版本。在『4｜客户档案』里查看与跟进。")
+    st.caption(storage_status()[1])
+    if st.button("💾 保存/更新到客户档案", key=f"save_record_{source_label}"):
+        snapshot = {
+            "source": source_label,
+            "engine": f"AI（{LLM_MODEL}）+ 关键词兜底" if llm_data else "关键词规则引擎",
+            "transcript": text,
+            "客户类型": profile["客户类型"],
+            "主要痛点": profile["主要痛点"],
+            "合规档": compliance,
+            "价值档": value_tier,
+            "节奏": rhythm,
+            "证据置信度": evidence,
+            "三轴": {k: {"status": v["status"], "score": v["score"], "max": v["max"]} for k, v in axes.items()},
+            "下一步板块": board_priority["headline"],
+            "可选营销途径": marketing_subtypes,
+            "tasks": tasks_snapshot,
+            "待客户提供": to_provide,
+            "已提供": already_provided,
+            "人工确认": agree,
+            "最终路线": final_combo,
+            "人工说明": override_reason,
+            "crm_note": crm_note,
+            "export_row": export_row,
+        }
+        saved_code = save_client_record(client_code, snapshot)
+        st.success(f"已保存到客户档案：{saved_code}。切到顶部『4｜客户档案』可查看与更新跟进进度。")
+
 
 if entry.startswith("1"):
     st.header("1｜Analyze Interview")
@@ -1699,6 +1881,79 @@ elif entry.startswith("2"):
         st.session_state["quick_client_code"] = client_code
     if st.session_state.get("quick_text"):
         render_analysis(st.session_state["quick_text"], st.session_state.get("quick_client_code", ""), "quick")
+
+elif entry.startswith("4"):
+    st.header("4｜客户档案")
+    backend, storage_msg = storage_status()
+    (st.success if backend == "supabase" else st.warning)(storage_msg)
+
+    records = list_client_records()
+    if not records:
+        st.info("还没有保存过客户档案。在『1｜Analyze Interview』分析后点『💾 保存/更新到客户档案』即可存入。")
+    else:
+        search = st.text_input("🔍 搜索客户编号", placeholder="输入客户编号关键字筛选")
+        shown = [r for r in records if not search or search.lower() in r["客户编号"].lower()]
+        st.caption(f"共 {len(records)} 个客户档案" + (f"，筛选出 {len(shown)} 个" if search else ""))
+        st.dataframe(shown, use_container_width=True, hide_index=True)
+
+        codes = [r["客户编号"] for r in shown]
+        if codes:
+            sel = st.selectbox("选择客户查看详情", codes, key="archive_select")
+            rec = load_client_record(sel)
+            if rec and rec.get("versions"):
+                latest = rec["versions"][-1]
+                st.markdown(f"### 客户 {rec['client_code']}")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("客户类型", latest.get("客户类型", "-"))
+                c2.metric("合规档", latest.get("合规档", "-"))
+                c3.metric("价值档", latest.get("价值档", "-"))
+                c4.metric("证据置信度", latest.get("证据置信度", "-"))
+                st.write(f"**下一步板块：** {latest.get('下一步板块', '-')}")
+                st.write(f"**可选营销途径：** {'、'.join(latest.get('可选营销途径', [])) or '不适用/待确认'}")
+                axes_saved = latest.get("三轴", {})
+                if axes_saved:
+                    a1, a2, a3 = st.columns(3)
+                    for col, k, name in [(a1, "Sourcing", "Sourcing轴"), (a2, "Marketing", "Marketing轴"), (a3, "Build", "建站自助轴")]:
+                        ax_ = axes_saved.get(k, {})
+                        col.metric(name, ax_.get("status", "-"), f"{ax_.get('score', '-')}/{ax_.get('max', '-')}")
+
+                st.markdown("#### 跟进Checklist（可更新进度）")
+                status_options = ["待跟进", "进行中", "已完成"]
+                new_tasks = []
+                for i, task in enumerate(latest.get("tasks", [])):
+                    cols = st.columns([1.2, 1.2, 4, 1.2])
+                    cols[0].write(task.get("服务", ""))
+                    cols[1].write(task.get("阶段", ""))
+                    cols[2].write(task.get("任务", ""))
+                    cur = task.get("状态", "待跟进")
+                    new_status = cols[3].selectbox("状态", status_options, index=status_options.index(cur) if cur in status_options else 0, key=f"archive_task_{sel}_{i}", label_visibility="collapsed")
+                    new_tasks.append({**task, "状态": new_status})
+                if st.button("💾 保存进度更新", key=f"archive_save_{sel}"):
+                    rec["versions"][-1]["tasks"] = new_tasks
+                    write_client_record(rec)
+                    st.success("进度已保存。")
+
+                st.markdown("#### 跟进备注")
+                for n in reversed(rec.get("notes", [])[-10:]):
+                    st.write(f"- `{n.get('time','')}` {n.get('text','')}")
+                new_note = st.text_input("添加跟进备注", placeholder="例如：0708已收到产品图，等价格表", key=f"archive_note_{sel}")
+                if st.button("添加备注", key=f"archive_addnote_{sel}") and new_note.strip():
+                    rec.setdefault("notes", []).append({"time": datetime.now().strftime("%Y-%m-%d %H:%M"), "text": new_note.strip()})
+                    write_client_record(rec)
+                    st.success("备注已添加，刷新列表后可见。")
+
+                with st.expander(f"历史版本（{len(rec['versions'])}次分析）", expanded=False):
+                    for v in reversed(rec["versions"]):
+                        st.write(f"- `{v.get('saved_at','')}`｜{v.get('engine','')}｜价值档：{v.get('价值档','-')}｜{v.get('下一步板块','-')}")
+                with st.expander("原始访谈内容（最新版本）", expanded=False):
+                    st.text(latest.get("transcript", ""))
+                if latest.get("export_row"):
+                    st.download_button(
+                        "下载CSV（可导入Lark多维表格）",
+                        data=csv_bytes(latest["export_row"]),
+                        file_name=f"client_route_{rec['client_code']}.csv",
+                        mime="text/csv",
+                    )
 
 else:
     st.header("3｜Benchmark：评分口径")
