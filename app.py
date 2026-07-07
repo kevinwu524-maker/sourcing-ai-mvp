@@ -92,9 +92,15 @@ CONFIG: Dict[str, Any] = {
         "red": {
             "label": "红线",
             "keywords": [
-                "违禁药", "毒品", "weapon", "gun", "knife", "武器", "烟草", "电子烟", "vape", "成人内容",
-                "赌博", "casino", "博彩", "仿牌", "counterfeit", "replica", "大麻", "cbd", "thc", "金融理财",
-                "unauthorized finance", "危化品", "hazardous chemical", "steroid", "controlled substance",
+                "违禁药", "违禁药品", "毒品", "麻醉品", "麻醉药品", "精神药品", "冰毒", "海洛因", "可卡因",
+                "narcotic", "psychotropic", "cocaine", "heroin", "meth", "methamphetamine",
+                "weapon", "gun", "firearm", "ammo", "弹药", "枪支", "knife", "管制刀具", "武器",
+                "烟草", "电子烟", "电子烟油", "烟油", "烟弹", "雾化器", "一次性电子烟", "尼古丁", "尼古丁盐",
+                "vape", "vapes", "vaping", "vape pen", "e-cigarette", "e-cig", "ecig", "disposable vape", "nicotine",
+                "成人内容", "赌博", "casino", "博彩", "老虎机", "slot machine",
+                "仿牌", "高仿", "山寨", "盗版", "counterfeit", "replica", "knockoff",
+                "大麻", "cbd", "thc", "金融理财", "unauthorized finance",
+                "危化品", "hazardous chemical", "steroid", "类固醇", "合成代谢", "controlled substance",
             ],
             "action": "直接否决，不进入付款、广告或sourcing流程。",
         },
@@ -103,6 +109,7 @@ CONFIG: Dict[str, Any] = {
             "keywords": [
                 "膳食补剂", "supplement", "保健品", "美容仪", "医疗器械", "medical device", "成人非露骨",
                 "博彩周边", "烟具", "smoking accessory", "功效护肤", "祛痘", "减肥", "减脂", "美白", "丰胸",
+                "下火", "排毒", "壮阳", "补肾", "增高", "处方药", "prescription drug",
                 "治疗", "疗效", "anti-aging", "weight loss", "health claim",
             ],
             "action": "只能走CPL；CPC/CPS需要审批后再判断。",
@@ -148,16 +155,18 @@ CONFIG: Dict[str, Any] = {
         "营销子类型", "合规档", "价值档", "节奏", "证据置信度", "SystemRoute", "归因说明", "AM阶段状态", "Status",
     ],
     "keywords": {
-        "ecommerce": ["shopify", "amazon", "tiktok shop", "etsy", "depop", "whatnot", "店铺", "电商", "独立站", "订单", "gmv", "sku", "上架", "listing", "产品", "商品", "供应链", "采购", "分销", "达人", "佣金", "moq", "广告", "pixel", "ga4", "whatsapp", "站点", "store"],
+        "ecommerce": ["shopify", "amazon", "亚马逊", "tiktok shop", "etsy", "depop", "whatnot", "店铺", "电商", "独立站", "订单", "gmv", "sku", "上架", "listing", "产品", "商品", "供应链", "采购", "分销", "达人", "佣金", "moq", "广告", "pixel", "ga4", "whatsapp", "站点", "store"],
         "sourcing_pain": ["sourcing", "找货", "货源", "供应商", "factory", "工厂", "supplier", "moq", "采购", "打样", "定制"],
         "traffic_pain": ["traffic", "流量", "获客", "ads", "广告", "曝光", "cpc", "放量", "投放"],
         "affiliate_pain": ["affiliate", "creator", "网红", "达人", "kol", "koc", "佣金", "cps", "带货"],
         "distributor_pain": ["distributor", "reseller", "分销", "代理", "批发", "wholesale", "渠道"],
-        "leads_pain": ["lead", "leads", "询盘", "表单", "b2b", "oem", "odm", "工厂", "manufacturer", "报价"],
+        # 注意：不要放裸词"工厂"，会让"自有工厂供应链"这类现有卖家被误判出B2B Leads痛点。
+        "leads_pain": ["lead", "leads", "询盘", "表单", "b2b", "oem", "odm", "manufacturer", "报价", "代工", "贴牌"],
         "store_pain": ["store setup", "建站", "独立站", "网站", "shopify", "product page", "listing", "上架"],
         "conversion_pain": ["conversion", "转化", "checkout", "页面", "落地页", "详情页", "客单价", "aov", "ltv"],
         "logistics_pain": ["logistics", "fulfillment", "shipping", "物流", "履约", "发货"],
-        "content_pain": ["content", "ugc", "素材", "视频", "拍摄", "社媒", "instagram", "youtube", "tiktok"],
+        # 注意：不要放裸词 "tiktok"，会被 "tiktok shop"（销售渠道）子串命中，导致内容平台/销售渠道误判。
+        "content_pain": ["content", "ugc", "素材", "视频", "拍摄", "社媒", "instagram", "youtube", "抖音", "小红书"],
     },
 }
 
@@ -170,8 +179,20 @@ def _t(text: str) -> str:
 
 
 def has_any(text: str, keywords: List[str]) -> bool:
+    """纯ASCII字母数字的短关键词（如 wa/gmv）用边界正则匹配，避免命中 want/software 等误触发；
+    中文关键词及包含空格/标点的英文短语按子串匹配即可。
+    注意：不用Python原生\\b——Python的\\b把中文字符当作\\w，导致"whatsapp群"这种中英文
+    紧贴的情况反而匹配不到，所以这里手写只把ASCII字母数字当"词字符"的边界判断。"""
     low = _t(text)
-    return any(k.lower() in low for k in keywords)
+    for k in keywords:
+        kw = k.lower()
+        if re.fullmatch(r"[a-z0-9]+", kw):
+            pattern = r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z0-9])"
+            if re.search(pattern, low):
+                return True
+        elif kw in low:
+            return True
+    return False
 
 
 def matched_keywords(text: str, keywords: List[str]) -> List[str]:
@@ -179,26 +200,29 @@ def matched_keywords(text: str, keywords: List[str]) -> List[str]:
     return [k for k in keywords if k.lower() in low]
 
 
+def _scale_by_unit(num: float, unit: str) -> float:
+    if unit == "k":
+        return num * 1_000
+    if unit == "m":
+        return num * 1_000_000
+    if unit == "万":
+        return num * 10_000
+    if unit == "亿":
+        return num * 100_000_000
+    return num
+
+
 def extract_money_values(text: str) -> List[float]:
-    """提取 $2,000 / 2000 dollars / $5k 等金额。"""
+    """提取 $2,000 / 2000 dollars / $5k / 35万美金 / 月销售额8000 等金额，支持中文万/亿数量词。"""
     low = _t(text).replace(",", "")
     values: List[float] = []
-    for m in re.finditer(r"\$\s*(\d+(?:\.\d+)?)\s*(k|m)?", low):
-        num = float(m.group(1))
-        unit = m.group(2)
-        if unit == "k":
-            num *= 1000
-        elif unit == "m":
-            num *= 1_000_000
-        values.append(num)
-    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*(k|m)?\s*(?:usd|dollars|dollar|美金|美元)", low):
-        num = float(m.group(1))
-        unit = m.group(2)
-        if unit == "k":
-            num *= 1000
-        elif unit == "m":
-            num *= 1_000_000
-        values.append(num)
+    for m in re.finditer(r"\$\s*(\d+(?:\.\d+)?)\s*(k|m|万|亿)?", low):
+        values.append(_scale_by_unit(float(m.group(1)), m.group(2) or ""))
+    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*(k|m|万|亿)?\s*(?:usd|dollars|dollar|美金|美元)", low):
+        values.append(_scale_by_unit(float(m.group(1)), m.group(2) or ""))
+    # GMV / 月销 / 客单价等中文表述，允许没有显式货币单位（如"月销售额35万"）
+    for m in re.finditer(r"(?:gmv|月销售额|月销|销售额|营业额|客单价|aov)\s*[:：]?\s*\$?\s*(\d+(?:\.\d+)?)\s*(k|m|万|亿)?", low):
+        values.append(_scale_by_unit(float(m.group(1)), m.group(2) or ""))
     return values
 
 
@@ -221,19 +245,12 @@ def extract_followers(text: str) -> float:
     low = _t(text).replace(",", "")
     max_followers = 0.0
     patterns = [
-        r"(\d+(?:\.\d+)?)\s*(k|m)?\s*(followers|fans|粉丝)",
-        r"粉丝\s*(\d+(?:\.\d+)?)\s*(k|m|万)?",
+        r"(\d+(?:\.\d+)?)\s*(k|m|万|亿)?\s*(?:followers|fans|粉丝)",
+        r"(?:followers|fans|粉丝)\s*(\d+(?:\.\d+)?)\s*(k|m|万|亿)?",
     ]
     for pat in patterns:
         for m in re.finditer(pat, low):
-            num = float(m.group(1))
-            unit = m.group(2) if len(m.groups()) >= 2 else ""
-            if unit == "k":
-                num *= 1000
-            elif unit == "m":
-                num *= 1_000_000
-            elif unit == "万":
-                num *= 10_000
+            num = _scale_by_unit(float(m.group(1)), m.group(2) or "")
             max_followers = max(max_followers, num)
     return max_followers
 
@@ -249,14 +266,17 @@ def extract_order_count(text: str) -> float:
 
 def detect_client_type(text: str) -> str:
     low = _t(text)
-    # 明确规则：优先识别工厂B2B和现有卖家；不得默认Creator。
-    if has_any(low, ["factory", "manufacturer", "oem", "odm", "b2b", "工厂", "厂家", "批发", "询盘"]):
-        return "工厂B2B"
-    if has_any(low, ["shopify", "amazon", "tiktok shop", "etsy", "depop", "whatnot", "store", "店铺", "独立站", "订单", "gmv", "卖", "销售"]):
+    # 明确规则：先看是否有具体电商店铺/GMV证据（现有卖家），避免"自有工厂供应链"这类
+    # 供应链侧描述被"工厂"关键词误判为工厂B2B；工厂B2B需要更明确的B2B/批发/OEM证据。
+    if has_any(low, ["shopify", "amazon", "亚马逊", "tiktok shop", "etsy", "depop", "whatnot", "store", "店铺", "独立站", "月销售额", "月销", "订单", "gmv", "上架"]):
         return "现有卖家"
-    if has_any(low, ["distributor", "reseller", "代理", "分销商", "渠道商", "批发商"]):
+    if has_any(low, ["factory", "manufacturer", "oem", "odm", "b2b", "询盘", "代工", "贴牌", "工厂直营", "出口工厂"]) or (
+        has_any(low, ["工厂", "厂家"]) and has_any(low, ["批发", "wholesale", "对外", "出口", "代工"])
+    ):
+        return "工厂B2B"
+    if has_any(low, ["distributor", "reseller", "代理", "分销商", "渠道商", "批发商", "批发"]):
         return "分销商"
-    if has_any(low, ["creator", "influencer", "kol", "koc", "粉丝", "followers", "content creator", "博主", "达人"]):
+    if has_any(low, ["creator", "influencer", "kol", "koc", "粉丝", "followers", "content creator", "博主", "达人", "网红"]):
         return "创作者"
     if has_any(low, ["new", "beginner", "新手", "刚开始", "idea", "想法", "还没开始"]):
         return "新手"
@@ -317,7 +337,9 @@ def detect_product_features(text: str) -> Dict[str, bool]:
         "强解释": has_any(low, ["how to", "tutorial", "complex", "education", "解释", "教程", "功能", "使用方法", "技术", "b2b", "oem"]),
         "可寄样": has_any(low, ["sample", "seeding", "寄样", "样品", "测评", "review", "unboxing", "开箱"]),
         "可标准化": has_any(low, ["sku", "standard", "标准", "现货", "ready stock", "库存", "同款"]),
-        "B2B长决策": has_any(low, ["b2b", "oem", "odm", "factory", "manufacturer", "wholesale", "批发", "工厂", "询盘", "报价", "采购决策"]),
+        # 注意：不能只靠裸"工厂/factory"判断B2B长决策，否则"自有工厂供应链"这类现有卖家会被误判成B2B。
+        "B2B长决策": has_any(low, ["b2b", "oem", "odm", "manufacturer", "wholesale", "批发", "询盘", "报价", "采购决策", "代工", "贴牌"])
+        or (has_any(low, ["factory", "工厂", "厂家"]) and has_any(low, ["批发", "wholesale", "对外", "出口", "代工", "manufacturer"])),
     }
 
 
@@ -389,17 +411,37 @@ def detect_signals(text: str) -> List[str]:
 
 def score_supply(text: str) -> Tuple[int, str]:
     low = _t(text)
-    if has_any(low, ["stable supplier", "own supplier", "自有供应链", "稳定供应链", "factory direct", "资深电商", "自带货"]):
+    stable_kws = [
+        "stable supplier", "own supplier", "own factory", "in-house factory", "factory direct",
+        "自有供应链", "自有工厂", "自营工厂", "自建供应链", "工厂直营", "长期合作供应商",
+        "稳定供应链", "资深电商", "自带货",
+    ]
+    if has_any(low, stable_kws):
         return 20, "客户有自有稳定供应链或属于资深电商自带货。"
-    if has_any(low, ["need sourcing", "looking for supplier", "找货", "无货源", "需要供应商", "sourcing support"]):
-        if has_any(low, ["hard to source", "high risk", "restricted", "找不到", "风险高", "做不了"]):
+
+    no_supply_kws = [
+        "need sourcing", "looking for supplier", "sourcing support", "no supplier",
+        "找货", "无货源", "需要供应商", "没有供应商", "没有货源", "还没有货源", "尚无货源",
+    ]
+    high_risk_kws = ["hard to source", "high risk", "restricted", "找不到", "风险高", "做不了", "违禁", "限制类目"]
+    uncertain_kws = ["need evaluate", "uncertain", "quality risk", "不确定", "需评估", "交期"]
+    workable_kws = ["easy to source", "品类可做", "容易找货", "好找货", "已有替代供应商", "有替代供应商"]
+
+    # 先判否定/没有货源的表述，再决定给分；"无货源"本身不再默认给15分。
+    if has_any(low, no_supply_kws):
+        if has_any(low, high_risk_kws):
             return 0, "客户无货源且品类/供应链风险高。"
-        if has_any(low, ["need evaluate", "uncertain", "不确定", "需评估", "quality risk", "交期"]):
+        if has_any(low, workable_kws):
+            return 15, "客户无货源，但品类明确可做（有替代供应商或找货难度低）。"
+        if has_any(low, uncertain_kws):
             return 10, "客户无货源，且供应链风险中等，需要进一步评估。"
-        return 15, "客户无货源，但品类看起来可做。"
-    if has_any(low, ["no supplier", "没有供应商", "没有货源"]):
-        return 10, "客户没有明确货源，需先评估品类和供应商可得性。"
-    return 10, "访谈未充分说明货源稳定性，暂按中等风险处理。"
+        return 0, "客户目前无货源，且未提供品类可做的证据，暂按0分处理，需先确认品类可行性（待补证据）。"
+
+    if has_any(low, high_risk_kws):
+        return 0, "客户供应链/品类风险高。"
+    if has_any(low, uncertain_kws):
+        return 10, "客户供应链风险中等，需要进一步评估。"
+    return 10, "访谈未充分说明货源稳定性，暂按中等风险处理，需要补充证据。"
 
 
 def score_paid(text: str) -> Tuple[int, str]:
@@ -411,7 +453,7 @@ def score_paid(text: str) -> Tuple[int, str]:
         return 15, "客户有兴趣，愿意先做小额测试。"
     if has_any(low, ["free only", "only free", "不投", "免费", "no budget", "没有预算", "不想花钱", "只要免费"]):
         return 0, "客户只要免费工具或明确不投营销，服务优先级封顶L2自助。"
-    return 15, "客户未明确预算，但没有排斥测试，暂按愿意小额测试处理。"
+    return 0, "访谈未提及预算或付费营销意愿，暂无证据评分，需先补充预算信息（待补证据）。"
 
 
 def score_private(text: str) -> Tuple[int, str]:
@@ -424,15 +466,15 @@ def score_private(text: str) -> Tuple[int, str]:
         return 8, "客户有少量私域或社群资源。"
     if has_any(low, ["no traffic", "没有流量", "无流量", "完全没有", "no audience"]):
         return 0, "客户完全无线上流量。"
-    return 7, "客户没有明确私域线索，按中性处理。"
+    return 0, "访谈未提及私域/粉丝相关信息，暂无证据评分，需先补充私域信息（待补证据）。"
 
 
 def score_ecommerce(text: str) -> Tuple[int, str]:
     low = _t(text)
-    if has_any(low, ["amazon", "shopify", "tiktok shop"]):
+    if has_any(low, ["amazon", "亚马逊", "shopify", "tiktok shop"]):
         return 15, "客户做过Amazon/Shopify/TikTok Shop。"
-    if has_any(low, ["etsy", "depop", "whatnot", "ebay", "walmart", "temu", "其他平台", "marketplace"]):
-        return 8, "客户做过其他电商平台。"
+    if has_any(low, ["etsy", "depop", "whatnot", "ebay", "walmart", "temu", "其他平台", "marketplace", "独立站", "自建站", "官网商城"]):
+        return 8, "客户做过其他电商平台或独立站。"
     if has_any(low, ["beginner", "new to ecommerce", "新手", "没做过", "first time"]):
         return 0, "客户属于纯新手。"
     return 0, "访谈未体现明确电商/建站经验，暂按纯新手处理。"
@@ -529,8 +571,9 @@ def determine_marketing_subtypes(text: str, compliance: str, scores: Dict[str, i
     if compliance == "红线":
         return [], ["红线品类不进入营销服务判断。"]
 
-    # AI矩阵号：冷启动/内容蓄水/没有私域但需要流量
-    if ("Traffic / Ads" in pains or "Content / UGC" in pains or scores.get("private_traffic", 0) in [0, 7]) and scores.get("paid_marketing_willingness", 0) > 0:
+    # AI矩阵号：真正的冷启动（私域弱 且 原渠道销售也弱），不能只因私域为0/中性就默认冷启动
+    cold_start = scores.get("private_traffic", 0) in [0, 7] and scores.get("existing_sales", 0) <= 7
+    if ("Traffic / Ads" in pains or "Content / UGC" in pains or cold_start) and scores.get("paid_marketing_willingness", 0) > 0:
         subtypes.append("AI社媒矩阵号")
         reasons.append("客户存在冷启动、内容蓄水或流量基础不足的问题。")
 
@@ -930,7 +973,7 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
     if not has_any(text, CONFIG["keywords"]["ecommerce"]):
         st.warning("系统没有识别到明显的电商/分销业务信号，本次分析置信度较低。请确认该客户是否属于电商卖家、品牌方、创作者或分销相关客户；如果不是，请不要直接使用系统生成的话术。")
 
-    compliance_override = st.session_state.get("compliance_override", "Auto")
+    compliance_override = st.session_state.get(f"compliance_override_{source_label}", "Auto")
     compliance, compliance_reason = detect_compliance(text, compliance_override)
     scores, score_reasons, axes = calculate_scores(text)
     evidence, evidence_reason = evidence_confidence(text, scores)
@@ -1100,7 +1143,7 @@ if entry.startswith("1"):
     st.header("1｜Analyze Interview")
     st.caption("已经有客户访谈、聊天记录或会议纪要时使用。系统会生成客户画像、三轴就绪度、服务组合、内部动作、客户follow-up和AM checklist。")
     client_code = st.text_input("客户编号", placeholder="例如：20260706-001")
-    st.selectbox("Compliance Override", ["Auto", "Green normal", "Gray needs approval", "Red not allowed"], key="compliance_override", help=COMPLIANCE_HELP)
+    st.selectbox("Compliance Override", ["Auto", "Green normal", "Gray needs approval", "Red not allowed"], key="compliance_override_analyze", help=COMPLIANCE_HELP)
     st.caption("默认建议使用Auto；只有当你确认系统误判，或你掌握额外合规信息时，才需要手动调整。")
     text = st.text_area("粘贴客户访谈内容 / call notes / WhatsApp记录", height=260, placeholder="请粘贴客户访谈内容。内容越包含品类、销售渠道、GMV、预算、货源、页面基础和营销目标，判断越准确。")
     if st.button("开始分析", type="primary"):
@@ -1123,7 +1166,7 @@ elif entry.startswith("2"):
         data_foundation = st.multiselect("页面与数据基础", ["站点", "Pixel", "GA4", "表单", "WhatsApp", "归因"])
         product_features = st.multiselect("产品特征", ["强展示", "强解释", "可寄样", "可标准化", "B2B长决策"])
         materials = st.text_input("素材情况", placeholder="例如：产品图+视频齐全 / 部分素材 / 几乎没有")
-        st.selectbox("Compliance Override", ["Auto", "Green normal", "Gray needs approval", "Red not allowed"], key="compliance_override", help=COMPLIANCE_HELP)
+        st.selectbox("Compliance Override", ["Auto", "Green normal", "Gray needs approval", "Red not allowed"], key="compliance_override_quick", help=COMPLIANCE_HELP)
         submitted = st.form_submit_button("生成快速评估", type="primary")
 
     if submitted:
