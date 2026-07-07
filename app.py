@@ -1,906 +1,1156 @@
-import re
-from datetime import datetime
+# -*- coding: utf-8 -*-
+"""
+Client Profile & Route Recommender - 三轴就绪度重构版
+运行方式：python3 -m streamlit run app.py
+"""
 
-import pandas as pd
+import re
+import csv
+import io
+from datetime import datetime
+from typing import Dict, List, Tuple, Any
+
 import streamlit as st
 
-st.set_page_config(page_title="Client Profile & Route Recommender V10", page_icon="🧭", layout="wide")
-
-# -----------------------------
-# Lightweight styling
-# -----------------------------
-st.markdown(
-    """
-    <style>
-    .block-container {padding-top: 1.5rem; padding-bottom: 3rem;}
-    .small-muted {color: #6b7280; font-size: 0.92rem;}
-    .big-card {border: 1px solid #e5e7eb; border-radius: 14px; padding: 18px; background: #ffffff; margin-bottom: 12px;}
-    .route-card {border: 1px solid #d1fae5; border-radius: 16px; padding: 18px; background: #ecfdf5; margin-bottom: 12px;}
-    .warn-card {border: 1px solid #fde68a; border-radius: 16px; padding: 18px; background: #fffbeb; margin-bottom: 12px;}
-    .danger-card {border: 1px solid #fecaca; border-radius: 16px; padding: 18px; background: #fef2f2; margin-bottom: 12px;}
-    .metric-title {font-size: 0.85rem; color: #6b7280; margin-bottom: 4px;}
-    .metric-value {font-size: 1.25rem; font-weight: 700; color: #111827;}
-    .chip {display: inline-block; padding: 4px 10px; margin: 2px 4px 2px 0; border-radius: 999px; background: #f3f4f6; font-size: 0.86rem;}
-    .copy-box {border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; background: #f9fafb; white-space: pre-wrap;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# -----------------------------
-# Knowledge base / sample cases
-# -----------------------------
-RED_KEYWORDS = [
-    "毒品", "违禁药", "武器", "枪", "弹药", "烟草", "电子烟", "vape", "成人内容", "色情", "赌博", "博彩",
-    "仿牌", "假货", "counterfeit", "大麻", "cbd", "thc", "加密理财", "金融服务", "危险化学品", "poison",
-]
-GRAY_KEYWORDS = [
-    "保健品", "膳食补剂", "补剂", "减肥", "瘦身", "美容仪", "微整", "医疗器械", "成人向", "不露骨",
-    "烟具配件", "博彩娱乐周边", "功效护肤", "祛痘", "美白", "抗衰", "丰胸", "medical", "health claim", "slimming", "whitening",
-]
-
-ECOMMERCE_SCOPE_KEYWORDS = [
-    "product", "products", "sku", "store", "shopify", "amazon", "etsy", "tiktok shop", "website", "order", "orders", "gmv",
-    "sales", "revenue", "customer", "supplier", "factory", "sourcing", "moq", "retail", "wholesale", "reseller",
-    "distributor", "affiliate", "commission", "creator", "influencer", "kol", "koc", "ads", "traffic", "sample", "seeding",
-    "产品", "商品", "品类", "店铺", "独立站", "订单", "销售", "销量", "供应商", "工厂", "寻源", "采购", "起订量",
-    "毛利", "零售价", "分销", "代理", "经销商", "佣金", "达人", "网红", "广告", "流量", "寄样", "种草", "素材"
-]
-
-SAMPLE_CASES = {
-    "Seller｜有销量，缺 sourcing + affiliate": {
-        "expected": "Sourcing Support → MyyBiz CPS / Store",
-        "note": "先验证供应链、目标价、MOQ 和样品；不要一开始只推 demo。",
-        "text": """Client Name: HomeGlow Studio
-Product Category: Home decor / LED mirror / room accessories
-BD: Could you tell me what you're selling now and where you're selling it?
-Client: We sell home decor items, mostly LED mirrors and small room accessories. We sell through Shopify and TikTok Shop. Shopify is doing around $8,000 to $12,000 monthly GMV. TikTok Shop is smaller, around 40 to 60 orders a month.
-BD: What is the biggest challenge?
-Client: Sourcing. Supplier price is not stable and quality is inconsistent. We want to test creator promotion but are not sure what commission rate makes sense.
-BD: Existing product or custom?
-Client: Mostly existing product, but we want custom packaging and our logo. Retail price is $59 to $79. Landed cost should be under $28. First order can be 300 units if sample is good.
-BD: Paid ads or influencer campaigns?
-Client: We spend $500 to $1,000 monthly on TikTok ads. We can offer 12% to 18% commission if margin works. We have product photos, videos, Shopify pages, and can share screenshots.
-""",
+# ============================================================
+# CONFIG：运营可直接改这里，不需要改下方逻辑
+# ============================================================
+CONFIG: Dict[str, Any] = {
+    "weights": {
+        "supply_stability": 20,
+        "paid_marketing_willingness": 25,
+        "private_traffic": 15,
+        "ecommerce_foundation": 15,
+        "existing_sales": 15,
+        "materials_readiness": 10,
     },
-    "Creator｜强内容能力，无供应链": {
-        "expected": "Co-Creation",
-        "note": "先判断受众、内容风格、产品创意和 launch 能力，不要按普通 merchant 处理。",
-        "text": """Client Name: Maya Lee
-Product Category: Streetwear / lifestyle accessories
-Client: I create streetwear and lifestyle content. I have 180,000 followers on TikTok and 62,000 on Instagram. Audience is women 18 to 28 in the U.S. My average TikTok video gets 20,000 to 50,000 views.
-BD: Have you sold products before?
-Client: Not my own product. I did affiliate links and brand deals. I sold around 240 units for a bag brand through TikTok Shop affiliate. I don't want to handle inventory or shipping.
-BD: Product idea?
-Client: A crossbody bag or phone charm line with my own color palette and packaging. I can create launch videos, livestreams, and styling content.
-Client: I do not have budget for inventory, but I can commit content and promotion if product fits my audience. I care about design, packaging, and story.
-""",
+    "axis": {
+        "Sourcing": {
+            "label": "Sourcing轴：货源稳定性",
+            "max": 20,
+            "components": ["supply_stability"],
+            "ready_min": 15,
+            "not_ready_max": 0,
+        },
+        "Marketing": {
+            "label": "Marketing轴：付费营销意愿 + 私域规模 + 原渠道销售表现",
+            "max": 55,
+            "components": ["paid_marketing_willingness", "private_traffic", "existing_sales"],
+            "ready_min": 38,
+            "not_ready_max": 14,
+            "paid_zero_force_not_ready": True,
+        },
+        "Build": {
+            "label": "建站自助轴：建站电商基础 + 电子物料完备度",
+            "max": 25,
+            "components": ["ecommerce_foundation", "materials_readiness"],
+            "ready_min": 20,
+            "not_ready_max": 7,
+        },
     },
-    "Brand｜有产品，想要 KOL/KOC 种草": {
-        "expected": "Myyshop / Product Seeding",
-        "note": "核心是 UGC、review、unboxing 和种草；不要承诺大规模 GMV。",
-        "text": """Client Name: PureSip Bottle
-Product Category: Water bottle / outdoor lifestyle
-Client: We sell reusable water bottles and outdoor drinkware. We have Shopify and Amazon. Amazon is around $15,000 monthly revenue.
-Client: Traffic and awareness are the main challenges. Ads are getting expensive. We want UGC, reviews, unboxing videos, and micro influencers.
-Client: We do not need sourcing now. We have inventory in the U.S. We can provide 100 to 150 samples over two months.
-Client: First we want content exposure and product seeding. If creators perform well, we can set up affiliate commission, maybe 10%. We have product images, videos, reviews, and media kit.
-""",
+    "readiness_labels": {
+        "ready": "Ready",
+        "need_evidence": "待补证据",
+        "not_ready": "Not Ready",
     },
-    "Merchant｜想招代理/分销商": {
-        "expected": "MyyBiz CPL / Distributor Lead Gen",
-        "note": "关键词是 reseller/distributor/qualified lead，因此优先 CPL。",
-        "text": """Client Name: FitPro Wholesale
-Product Category: Fitness accessories / resistance bands
-Client: We sell fitness accessories wholesale to local gyms and small retailers. We have a website but more like a catalog.
-Client: We want more resellers and local distributors in California and Texas. Direct consumer sales are not priority. We need qualified leads, not just traffic.
-Client: We have wholesale price list, MOQ by SKU, product photos, and shipping terms. Around 30 SKUs.
-Client: We can test $1,000 if leads are relevant. Good leads are gym owners, fitness studios, sports stores, and small distributors with business email or store info.
-""",
+    "component_options": {
+        "supply_stability": [
+            (20, "自有稳定供应链/资深电商自带货"),
+            (15, "无货源，但品类可做"),
+            (10, "无货源，风险中等，需要进一步评估"),
+            (0, "风险高，做不了，直接归零"),
+        ],
+        "paid_marketing_willingness": [
+            (25, "有明确预算≥$2,000，或投过付费广告"),
+            (15, "有兴趣，愿意小额测试"),
+            (0, "只要免费工具/不投营销，服务封顶L2自助"),
+        ],
+        "private_traffic": [
+            (15, "成规模私域，互动率ER≥3%"),
+            (8, "少量私域"),
+            (7, "无私域，中性"),
+            (0, "完全无线上流量"),
+        ],
+        "ecommerce_foundation": [
+            (15, "做过Amazon/Shopify/TikTok Shop"),
+            (8, "做过其他电商平台"),
+            (0, "纯新手"),
+        ],
+        "existing_sales": [
+            (15, "近半年稳定GMV≥$5,000"),
+            (8, "少量/偶发销售"),
+            (7, "不适用，如纯网红转电商，中性"),
+            (0, "无销售记录"),
+        ],
+        "materials_readiness": [
+            (10, "产品图 + 视频/素材齐全"),
+            (5, "部分齐全"),
+            (0, "几乎没有"),
+        ],
     },
-    "Low readiness｜只有想法，缺产品/预算/渠道": {
-        "expected": "Nurture / Self-service",
-        "note": "不能因为客户感兴趣就推进。先教育，不进入 sourcing queue。",
-        "text": """Client Name: New Starter
-Product Category: Beauty / trending products
-Client: I haven't started yet. I want to sell beauty products because I see people making money online.
-Client: I don't have a product in mind. Maybe skincare, makeup tools, or something trending on TikTok.
-Client: I might sell on TikTok or Instagram. I don't have a website. I have 500 followers on Instagram but don't post much.
-Client: I prefer not to spend money first. I want to test for free if possible. No sales history or customer list. I just want something easy to make money.
-""",
+    "compliance": {
+        "red": {
+            "label": "红线",
+            "keywords": [
+                "违禁药", "毒品", "weapon", "gun", "knife", "武器", "烟草", "电子烟", "vape", "成人内容",
+                "赌博", "casino", "博彩", "仿牌", "counterfeit", "replica", "大麻", "cbd", "thc", "金融理财",
+                "unauthorized finance", "危化品", "hazardous chemical", "steroid", "controlled substance",
+            ],
+            "action": "直接否决，不进入付款、广告或sourcing流程。",
+        },
+        "gray": {
+            "label": "灰色",
+            "keywords": [
+                "膳食补剂", "supplement", "保健品", "美容仪", "医疗器械", "medical device", "成人非露骨",
+                "博彩周边", "烟具", "smoking accessory", "功效护肤", "祛痘", "减肥", "减脂", "美白", "丰胸",
+                "治疗", "疗效", "anti-aging", "weight loss", "health claim",
+            ],
+            "action": "只能走CPL；CPC/CPS需要审批后再判断。",
+        },
+        "green": {
+            "label": "合规",
+            "keywords": [
+                "服装", "鞋", "帽", "家居", "美妆", "3c配件", "手机壳", "宠物", "母婴", "运动户外", "饰品", "箱包", "食品",
+                "fashion", "home", "beauty", "phone case", "pet", "baby", "outdoor", "jewelry", "bag", "accessories",
+            ],
+            "action": "CPC/CPS/CPL三渠道都可做。",
+        },
     },
-    "Gray compliance｜功效护肤/减肥宣称": {
-        "expected": "Compliance Review first; CPL only if approved",
-        "note": "业务潜力可以中高，但合规优先，审批前不建议 CPC/CPS/Stripe。",
-        "text": """Client Name: GlowFast Lab
-Product Category: Skincare / body slimming cream
-Client: We have a body slimming cream and whitening serum. The product page says it can reduce belly fat in 14 days and remove dark spots quickly. We want to run ads and find affiliates.
-Client: Shopify and WhatsApp groups. Monthly revenue is around $6,000 from repeat customers.
-BD: Certificates?
-Client: Ingredient list from supplier, but no U.S. clinical test. We can edit claims if needed.
-Client: We want CPC ads and affiliates, but can start with lead generation. Budget around $800 for testing.
-""",
+    "marketing_subtypes": {
+        "AI社媒矩阵号": "内容蓄水冷启动，反哺其他渠道。",
+        "CPS网红营销": "强展示、可寄样、佣金空间足的商品。",
+        "CPL分销员": "渠道型/私域型分销驱动。",
+        "CPL Leads": "B2B批发/OEM/工厂/询盘型高客单、长决策链，需要24h跟单。",
+        "CPC投放": "页面、Pixel、Tracking、预算ready，适合快速测品放量。",
+    },
+    "value_gate": {
+        "free_caps_priority": "L2自助",
+        "high_budget_min": 2000,
+        "high_budget_lift": 1,
+    },
+    "service_rules": {
+        "all_ready": {
+            "combo": ["Sourcing", "建站自助", "营销"],
+            "main": "全链路服务",
+            "aux": "按里程碑分阶段推进",
+            "rhythm": "长周期",
+        },
+        "nurture": {
+            "combo": ["Nurture"],
+            "main": "待培育",
+            "aux": "先补基础信息和证据，不进入重投入流程",
+            "rhythm": "待培育",
+        },
+    },
+    "priority_order": ["L2自助", "L1低", "M中", "H高"],
+    "lark_fields": [
+        "客户编号", "ClientType", "PainPoint", "Sourcing就绪度", "营销就绪度", "建站就绪度", "服务组合", "主方案",
+        "营销子类型", "合规档", "价值档", "节奏", "证据置信度", "SystemRoute", "归因说明", "AM阶段状态", "Status",
+    ],
+    "keywords": {
+        "ecommerce": ["shopify", "amazon", "tiktok shop", "etsy", "depop", "whatnot", "店铺", "电商", "独立站", "订单", "gmv", "sku", "上架", "listing", "产品", "商品", "供应链", "采购", "分销", "达人", "佣金", "moq", "广告", "pixel", "ga4", "whatsapp", "站点", "store"],
+        "sourcing_pain": ["sourcing", "找货", "货源", "供应商", "factory", "工厂", "supplier", "moq", "采购", "打样", "定制"],
+        "traffic_pain": ["traffic", "流量", "获客", "ads", "广告", "曝光", "cpc", "放量", "投放"],
+        "affiliate_pain": ["affiliate", "creator", "网红", "达人", "kol", "koc", "佣金", "cps", "带货"],
+        "distributor_pain": ["distributor", "reseller", "分销", "代理", "批发", "wholesale", "渠道"],
+        "leads_pain": ["lead", "leads", "询盘", "表单", "b2b", "oem", "odm", "工厂", "manufacturer", "报价"],
+        "store_pain": ["store setup", "建站", "独立站", "网站", "shopify", "product page", "listing", "上架"],
+        "conversion_pain": ["conversion", "转化", "checkout", "页面", "落地页", "详情页", "客单价", "aov", "ltv"],
+        "logistics_pain": ["logistics", "fulfillment", "shipping", "物流", "履约", "发货"],
+        "content_pain": ["content", "ugc", "素材", "视频", "拍摄", "社媒", "instagram", "youtube", "tiktok"],
     },
 }
 
-ROUTE_DESCRIPTIONS = {
-    "Sourcing Support": "客户主要痛点是找货、价格、MOQ、质量或定制。先验证供应链，不要先推完整营销方案。",
-    "MyyBiz Store": "客户有产品/素材/电商基础，需要独立站、商品页、订单管理或收款闭环。",
-    "MyyBiz CPC": "客户有产品和预算，主要缺流量。适合小预算广告测试，但要先确认素材和目标 CPA/ROAS。",
-    "MyyBiz CPL": "客户想找代理、分销商、经销商或 B2B leads。适合 lead generation，而不是普通点击流量。",
-    "MyyBiz CPS / Affiliate": "客户想让达人、affiliate 或分销员按销售拿佣金。必须确认佣金空间和样品能力。",
-    "Co-Creation": "客户偏 creator，有内容/受众/创意，但不想承担库存和履约。适合共同开发产品。",
-    "Myyshop / Product Seeding": "品牌/商家已有产品，希望通过 KOL/KOC 寄样、UGC、review、unboxing 增加曝光。",
-    "Myyshop / KOL-KOC Seeding / UGC Exposure": "品牌/商家已有产品，希望通过 KOL/KOC 寄样、UGC、review、unboxing 增加曝光。",
-    "Nurture / Self-service": "客户资源或信息不足，不适合深度投入。先教育、低频跟进，等明确行为信号。",
-    "Compliance Review": "命中灰色/敏感风险。先审批，审批前不要承诺投放、收款或转化结果。",
-    "Reject / Red Line": "红线类目，不推进任何渠道。",
-}
+# ============================================================
+# 文本处理与信号识别
+# ============================================================
 
-# -----------------------------
-# Helper functions
-# -----------------------------
-def norm(text):
+def _t(text: str) -> str:
     return (text or "").lower()
 
 
-def contains_any(text, words):
-    t = norm(text)
-    return any(w.lower() in t for w in words)
+def has_any(text: str, keywords: List[str]) -> bool:
+    low = _t(text)
+    return any(k.lower() in low for k in keywords)
 
 
-def keyword_hit(text, keywords):
-    t = norm(text)
-    return [kw for kw in keywords if kw.lower() in t]
+def matched_keywords(text: str, keywords: List[str]) -> List[str]:
+    low = _t(text)
+    return [k for k in keywords if k.lower() in low]
 
 
-def extract_money_values(text):
-    values = []
-    if not text:
-        return values
+def extract_money_values(text: str) -> List[float]:
+    """提取 $2,000 / 2000 dollars / $5k 等金额。"""
+    low = _t(text).replace(",", "")
+    values: List[float] = []
+    for m in re.finditer(r"\$\s*(\d+(?:\.\d+)?)\s*(k|m)?", low):
+        num = float(m.group(1))
+        unit = m.group(2)
+        if unit == "k":
+            num *= 1000
+        elif unit == "m":
+            num *= 1_000_000
+        values.append(num)
+    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*(k|m)?\s*(?:usd|dollars|dollar|美金|美元)", low):
+        num = float(m.group(1))
+        unit = m.group(2)
+        if unit == "k":
+            num *= 1000
+        elif unit == "m":
+            num *= 1_000_000
+        values.append(num)
+    return values
+
+
+def max_money(text: str) -> float:
+    vals = extract_money_values(text)
+    return max(vals) if vals else 0
+
+
+def extract_percent_values(text: str) -> List[float]:
+    vals = []
+    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*%", text or ""):
+        try:
+            vals.append(float(m.group(1)))
+        except ValueError:
+            pass
+    return vals
+
+
+def extract_followers(text: str) -> float:
+    low = _t(text).replace(",", "")
+    max_followers = 0.0
     patterns = [
-        r"\$\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)(\s*[kKmM])?",
-        r"([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)(\s*[kKmM])?\s*(?:usd|dollars|美金|美元)",
+        r"(\d+(?:\.\d+)?)\s*(k|m)?\s*(followers|fans|粉丝)",
+        r"粉丝\s*(\d+(?:\.\d+)?)\s*(k|m|万)?",
     ]
     for pat in patterns:
-        for num, suffix in re.findall(pat, text):
-            try:
-                val = float(num.replace(",", ""))
-                s = suffix.strip().lower()
-                if s == "k":
-                    val *= 1000
-                elif s == "m":
-                    val *= 1000000
-                values.append(val)
-            except Exception:
-                pass
-    return values
+        for m in re.finditer(pat, low):
+            num = float(m.group(1))
+            unit = m.group(2) if len(m.groups()) >= 2 else ""
+            if unit == "k":
+                num *= 1000
+            elif unit == "m":
+                num *= 1_000_000
+            elif unit == "万":
+                num *= 10_000
+            max_followers = max(max_followers, num)
+    return max_followers
 
 
-def extract_followers(text):
-    t = text or ""
-    values = []
-    # very rough parser for "180,000 followers" or "50k followers"
-    for m in re.findall(r"([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)(\s*[kKmM])?\s*(followers|粉丝)", t):
-        num, suffix, _ = m
-        try:
-            val = float(num.replace(",", ""))
-            s = suffix.strip().lower()
-            if s == "k":
-                val *= 1000
-            elif s == "m":
-                val *= 1000000
-            values.append(int(val))
-        except Exception:
-            pass
-    return values
+def extract_order_count(text: str) -> float:
+    low = _t(text).replace(",", "")
+    max_orders = 0.0
+    for pat in [r"(\d+)\s*(orders|订单)", r"月\s*(\d+)\s*(单|订单)"]:
+        for m in re.finditer(pat, low):
+            max_orders = max(max_orders, float(m.group(1)))
+    return max_orders
 
 
-def compliance_level(text, manual=None):
-    manual = manual or "Auto"
-    if manual.startswith("Red"):
-        return "Red", ["manual red flag"]
-    if manual.startswith("Gray"):
-        return "Gray", ["manual gray flag"]
-    red = keyword_hit(text, RED_KEYWORDS)
-    gray = keyword_hit(text, GRAY_KEYWORDS)
-    if red:
-        return "Red", red
-    if gray:
-        return "Gray", gray
-    return "Green", []
+def detect_client_type(text: str) -> str:
+    low = _t(text)
+    # 明确规则：优先识别工厂B2B和现有卖家；不得默认Creator。
+    if has_any(low, ["factory", "manufacturer", "oem", "odm", "b2b", "工厂", "厂家", "批发", "询盘"]):
+        return "工厂B2B"
+    if has_any(low, ["shopify", "amazon", "tiktok shop", "etsy", "depop", "whatnot", "store", "店铺", "独立站", "订单", "gmv", "卖", "销售"]):
+        return "现有卖家"
+    if has_any(low, ["distributor", "reseller", "代理", "分销商", "渠道商", "批发商"]):
+        return "分销商"
+    if has_any(low, ["creator", "influencer", "kol", "koc", "粉丝", "followers", "content creator", "博主", "达人"]):
+        return "创作者"
+    if has_any(low, ["new", "beginner", "新手", "刚开始", "idea", "想法", "还没开始"]):
+        return "新手"
+    return "待确认"
 
 
-def detect_flags(text):
-    t = norm(text)
-    money = extract_money_values(text)
+def detect_compliance(text: str, override: str = "Auto") -> Tuple[str, str]:
+    if override != "Auto":
+        mapping = {
+            "Green normal": "合规",
+            "Gray needs approval": "灰色",
+            "Red not allowed": "红线",
+        }
+        label = mapping.get(override, "合规")
+        action = next((v["action"] for v in CONFIG["compliance"].values() if v["label"] == label), "")
+        return label, f"人工选择：{label}。{action}"
+
+    low = _t(text)
+    for level in ["red", "gray", "green"]:
+        cfg = CONFIG["compliance"][level]
+        if has_any(low, cfg["keywords"]):
+            return cfg["label"], f"系统识别到相关品类/关键词，判断为{cfg['label']}。{cfg['action']}"
+    return "合规", "未识别到明显红线或灰色品类关键词，暂按合规处理；如有敏感宣称仍需人工复核。"
+
+
+def detect_pain_points(text: str) -> List[str]:
+    pain_map = {
+        "Sourcing": CONFIG["keywords"]["sourcing_pain"],
+        "Traffic / Ads": CONFIG["keywords"]["traffic_pain"],
+        "Affiliate / Creator Sales": CONFIG["keywords"]["affiliate_pain"],
+        "Distributor / Reseller": CONFIG["keywords"]["distributor_pain"],
+        "B2B Leads": CONFIG["keywords"]["leads_pain"],
+        "Store Setup": CONFIG["keywords"]["store_pain"],
+        "Conversion": CONFIG["keywords"]["conversion_pain"],
+        "Logistics": CONFIG["keywords"]["logistics_pain"],
+        "Content / UGC": CONFIG["keywords"]["content_pain"],
+    }
+    pains = [name for name, kws in pain_map.items() if has_any(text, kws)]
+    return pains or ["Not clear"]
+
+
+def detect_page_data_foundation(text: str) -> Dict[str, bool]:
+    low = _t(text)
+    return {
+        "站点": has_any(low, ["website", "site", "shopify", "independent store", "独立站", "网站", "店铺"]),
+        "Pixel": has_any(low, ["pixel", "meta pixel", "tiktok pixel", "facebook pixel"]),
+        "GA4": has_any(low, ["ga4", "google analytics", "analytics"]),
+        "表单": has_any(low, ["form", "lead form", "表单", "询盘表"]),
+        "WhatsApp": has_any(low, ["whatsapp", "wa"]),
+        "归因": has_any(low, ["tracking", "utm", "attribution", "归因", "追踪"]),
+    }
+
+
+def detect_product_features(text: str) -> Dict[str, bool]:
+    low = _t(text)
+    return {
+        "强展示": has_any(low, ["fashion", "beauty", "jewelry", "home decor", "streetwear", "accessories", "视觉", "展示", "穿搭", "美妆", "饰品", "家居"]),
+        "强解释": has_any(low, ["how to", "tutorial", "complex", "education", "解释", "教程", "功能", "使用方法", "技术", "b2b", "oem"]),
+        "可寄样": has_any(low, ["sample", "seeding", "寄样", "样品", "测评", "review", "unboxing", "开箱"]),
+        "可标准化": has_any(low, ["sku", "standard", "标准", "现货", "ready stock", "库存", "同款"]),
+        "B2B长决策": has_any(low, ["b2b", "oem", "odm", "factory", "manufacturer", "wholesale", "批发", "工厂", "询盘", "报价", "采购决策"]),
+    }
+
+
+def detect_aov_ltv(text: str) -> str:
+    low = _t(text)
+    values = extract_money_values(text)
+    if has_any(low, ["aov", "客单价"]):
+        return f"已提到客单价/AOV，金额线索：{', '.join(['$'+str(int(v)) for v in values[:3]]) or '未给金额'}"
+    if has_any(low, ["ltv", "复购", "repeat purchase", "retention", "留存"]):
+        return "已提到LTV/复购/留存线索"
+    if values:
+        return f"访谈中出现金额线索：{', '.join(['$'+str(int(v)) for v in values[:3]])}，需确认是客单价、预算还是GMV"
+    return "未确认"
+
+
+def evidence_confidence(text: str, component_scores: Dict[str, int]) -> Tuple[str, str]:
+    low = _t(text)
+    evidence_hits = 0
+    reasons = []
+    if extract_money_values(text):
+        evidence_hits += 1
+        reasons.append("有金额/预算/GMV数字")
+    if has_any(low, ["screenshot", "截图", "proof", "证明", "后台", "dashboard", "link", "链接"]):
+        evidence_hits += 1
+        reasons.append("提到截图/链接/后台证明")
+    if has_any(low, ["shopify", "amazon", "tiktok shop", "etsy", "website", "独立站", "店铺"]):
+        evidence_hits += 1
+        reasons.append("有明确销售渠道")
+    if extract_followers(text) > 0 or has_any(low, ["community", "社群", "名单", "email list", "discord", "telegram", "whatsapp group"]):
+        evidence_hits += 1
+        reasons.append("有私域/粉丝/社群线索")
+    if has_any(low, ["product photo", "video", "素材", "产品图", "listing", "图片", "视频"]):
+        evidence_hits += 1
+        reasons.append("有素材或上架资料线索")
+
+    if evidence_hits >= 4:
+        return "高", "；".join(reasons)
+    if evidence_hits >= 2:
+        return "中", "；".join(reasons)
+    return "低", "访谈中可验证信息较少，建议补Missing Info后重跑。"
+
+
+def detect_signals(text: str) -> List[str]:
+    """标签必须来自访谈内容。禁止无粉丝/私域时输出strong_audience。"""
+    signals = []
+    low = _t(text)
+    if has_any(low, ["shopify", "amazon", "tiktok shop", "etsy", "depop", "whatnot", "独立站", "店铺"]):
+        signals.append("有明确销售渠道")
+    if max_money(text) >= 5000 or has_any(low, ["gmv", "sales", "销售额"]):
+        signals.append("有GMV/销售额线索")
+    if max_money(text) >= 2000 or has_any(low, ["paid ads", "广告预算", "投放", "meta ads", "google ads", "tiktok ads"]):
+        signals.append("有付费营销线索")
     followers = extract_followers(text)
-    return {
-        "money": money,
-        "followers": followers,
-        "creator": contains_any(t, ["creator", "influencer", "kol", "koc", "tiktok", "instagram", "youtube", "内容创作者", "达人", "网红", "粉丝"]),
-        "strong_audience": contains_any(t, ["followers", "audience", "community", "email list", "customer list", "whatsapp group", "discord", "telegram", "粉丝", "社群", "客户名单"]) or (followers and max(followers) >= 10000),
-        "merchant": contains_any(t, ["shopify", "amazon", "etsy", "tiktok shop", "store", "website", "brand", "merchant", "独立站", "商家", "店铺", "品牌"]),
-        "has_sales": contains_any(t, ["gmv", "monthly revenue", "monthly sales", "orders", "sold", "sales", "月gmv", "月销售", "销量", "订单", "revenue"]),
-        "has_proof": contains_any(t, ["screenshot", "store link", "shopify admin", "amazon seller", "后台", "截图", "店铺链接", "订单截图", "gmv截图"]),
-        "has_product": contains_any(t, ["sku", "inventory", "stock", "already have product", "ready to list", "product images", "listing", "已有产品", "现货", "可以上架", "库存"]),
-        "needs_sourcing": contains_any(t, ["sourcing", "source", "supplier", "factory", "1688", "alibaba", "找货", "寻源", "供应商", "工厂", "采购", "price not stable", "quality is inconsistent"]),
-        "needs_traffic": contains_any(t, ["traffic", "exposure", "ads", "ad cost", "paid ads", "awareness", "流量", "曝光", "广告", "投放", "获客"]),
-        "wants_affiliate": contains_any(t, ["affiliate", "commission", "creator promotion", "cps", "promoter", "佣金", "分销", "联盟", "带货", "达人"]),
-        "wants_distributor": contains_any(t, ["reseller", "distributor", "agent", "wholesale", "dealer", "qualified leads", "代理", "分销商", "经销商", "批发"]),
-        "wants_seeding": contains_any(t, ["seeding", "sample", "review", "unboxing", "ugc", "micro influencers", "寄样", "种草", "开箱", "测评"]),
-        "has_budget": contains_any(t, ["budget", "ad spend", "marketing budget", "paid ads", "test $", "广告预算", "投放预算", "小额测试", "愿意投"]) or any(v >= 200 for v in money),
-        "has_materials": contains_any(t, ["photo", "image", "video", "media kit", "product page", "listing", "素材", "图片", "视频", "卖点", "价格表"]),
-        "has_moq_price": contains_any(t, ["moq", "target price", "retail price", "landed cost", "purchase price", "目标价", "采购价", "零售价", "毛利", "起订量"]),
-        "custom": contains_any(t, ["custom", "logo", "packaging", "label", "material", "size", "定制", "包装", "材质", "尺寸", "颜色"]),
-        "zero_resource": contains_any(t, ["no product", "no traffic", "no budget", "free if possible", "first time", "haven't started", "没有产品", "没有流量", "没有预算", "纯新手", "只想免费"]),
-        "stripe_payment": contains_any(t, ["stripe", "payment", "paypal", "收款", "公司主体", "履约"]),
-        "decision_maker": contains_any(t, ["owner", "founder", "ceo", "decision maker", "老板", "创始人", "本人决定", "我可以决定"]),
-    }
-
-
-def score_from_flags(flags):
-    # Keep score in background. Employees see profile/actions first.
-    product = 35
-    if flags["needs_sourcing"]:
-        product += 15
-    if flags["has_moq_price"]:
-        product += 18
-    if flags["has_product"]:
-        product += 12
-    if flags["custom"]:
-        product -= 4
-    if flags["has_materials"]:
-        product += 8
-    if flags["zero_resource"]:
-        product -= 25
-
-    client = 30
-    if flags["has_sales"]:
-        client += 20
-    if flags["has_budget"]:
-        client += 16
-    if flags["strong_audience"]:
-        client += 14
-    if flags["merchant"]:
-        client += 10
-    if flags["has_proof"]:
-        client += 10
-    if flags["zero_resource"]:
-        client -= 30
-
-    channel = 30
-    if flags["wants_affiliate"]:
-        channel += 18
-    if flags["wants_distributor"]:
-        channel += 18
-    if flags["needs_traffic"]:
-        channel += 10
-    if flags["has_product"]:
-        channel += 10
-    if flags["has_materials"]:
-        channel += 8
-    if flags["zero_resource"]:
-        channel -= 25
-
-    product = max(0, min(100, product))
-    client = max(0, min(100, client))
-    channel = max(0, min(100, channel))
-    raw = round(product * 0.35 + client * 0.35 + channel * 0.30, 1)
-    return product, client, channel, raw
-
-
-def evidence_level(flags):
-    if flags["has_proof"]:
-        return "High", 1.00
-    if flags["has_sales"] or flags["has_budget"] or flags["money"] or flags["followers"]:
-        return "Medium", 0.88
-    return "Low", 0.75
-
-
-def confidence_level(flags, missing_count):
-    evidence, _ = evidence_level(flags)
-    positives = sum(1 for k in ["has_sales", "has_budget", "has_product", "has_materials", "has_moq_price", "strong_audience", "wants_affiliate", "wants_distributor", "needs_sourcing"] if flags.get(k))
-    if evidence == "High" and positives >= 5 and missing_count <= 3:
-        return "High"
-    if evidence in ["High", "Medium"] and positives >= 3 and missing_count <= 6:
-        return "Medium"
-    return "Low"
-
-
-def priority_from_score(score, compliance):
-    if compliance == "Red":
-        return "Reject"
-    if compliance == "Gray":
-        return "Compliance Review"
-    if score >= 82:
-        return "A / Fast Track"
-    if score >= 68:
-        return "B / Good Fit"
-    if score >= 52:
-        return "C / Test & Validate"
-    if score >= 38:
-        return "D / Nurture"
-    return "E / Not Ready"
-
-
-def recommend_route(flags, compliance):
-    if compliance == "Red":
-        return "Reject / Red Line"
-    if compliance == "Gray":
-        return "Compliance Review"
-    if flags["zero_resource"]:
-        return "Nurture / Self-service"
-    if flags["creator"] and flags["strong_audience"] and not flags["has_product"]:
-        return "Co-Creation"
-    if flags["wants_distributor"]:
-        return "MyyBiz CPL"
-    if flags["wants_seeding"] and flags["has_product"]:
-        return "Myyshop / Product Seeding"
-    if flags["needs_sourcing"]:
-        if flags["wants_affiliate"]:
-            return "Sourcing Support → MyyBiz CPS / Affiliate"
-        return "Sourcing Support"
-    if flags["wants_affiliate"]:
-        return "MyyBiz CPS / Affiliate"
-    if flags["needs_traffic"] and flags["has_budget"]:
-        return "MyyBiz CPC"
-    if flags["merchant"] and flags["has_product"]:
-        return "MyyBiz Store"
-    return "Nurture / Self-service"
-
-
-def missing_info(text):
-    checks = [
-        ("主营品类 / 具体产品", ["category", "product", "品类", "产品", "sku"]),
-        ("当前销售渠道", ["shopify", "amazon", "etsy", "tiktok shop", "website", "销售渠道", "平台", "独立站"]),
-        ("GMV / 订单量 / 生意规模", ["gmv", "orders", "monthly sales", "revenue", "订单", "销量", "月销售"]),
-        ("销售证明 / 店铺链接 / 截图", ["screenshot", "store link", "shopify admin", "截图", "店铺链接", "后台"]),
-        ("目标采购价 / 零售价 / 毛利", ["target price", "retail price", "landed cost", "margin", "目标价", "采购价", "零售价", "毛利"]),
-        ("MOQ / 首单预算", ["moq", "budget", "first order", "minimum order", "预算", "首单", "起订量"]),
-        ("定制范围", ["custom", "logo", "packaging", "material", "size", "定制", "包装", "材质", "尺寸"]),
-        ("流量来源 / 私域 / 达人资源", ["traffic", "followers", "community", "influencer", "流量", "粉丝", "社群", "达人"]),
-        ("营销预算 / 广告经验", ["paid ads", "ad spend", "marketing budget", "广告", "投放", "预算"]),
-        ("佣金比例 / Affiliate 结构", ["commission", "affiliate", "cps", "佣金", "分销", "联盟"]),
-        ("收款 / Stripe / 履约", ["stripe", "payment", "fulfillment", "收款", "履约", "物流"]),
-        ("最大痛点", ["challenge", "headache", "pain", "bottleneck", "难题", "痛点", "瓶颈"]),
-    ]
-    present = []
-    missing = []
-    for label, words in checks:
-        if contains_any(text, words):
-            present.append(label)
+    er_values = extract_percent_values(text)
+    if followers > 0 or has_any(low, ["私域", "社群", "customer list", "email list", "whatsapp group", "discord", "telegram"]):
+        if followers >= 10000 or any(v >= 3 for v in er_values):
+            signals.append("有成规模私域/粉丝线索")
         else:
-            missing.append(label)
-    return present, missing
+            signals.append("有少量私域/粉丝线索")
+    if has_any(low, ["sample", "seeding", "寄样", "样品", "review", "unboxing"]):
+        signals.append("有寄样/种草线索")
+    if has_any(low, ["pixel", "ga4", "tracking", "utm", "归因"]):
+        signals.append("有页面追踪/数据基础线索")
+    return signals
+
+# ============================================================
+# 评分：严格按参考数据
+# ============================================================
+
+def score_supply(text: str) -> Tuple[int, str]:
+    low = _t(text)
+    if has_any(low, ["stable supplier", "own supplier", "自有供应链", "稳定供应链", "factory direct", "资深电商", "自带货"]):
+        return 20, "客户有自有稳定供应链或属于资深电商自带货。"
+    if has_any(low, ["need sourcing", "looking for supplier", "找货", "无货源", "需要供应商", "sourcing support"]):
+        if has_any(low, ["hard to source", "high risk", "restricted", "找不到", "风险高", "做不了"]):
+            return 0, "客户无货源且品类/供应链风险高。"
+        if has_any(low, ["need evaluate", "uncertain", "不确定", "需评估", "quality risk", "交期"]):
+            return 10, "客户无货源，且供应链风险中等，需要进一步评估。"
+        return 15, "客户无货源，但品类看起来可做。"
+    if has_any(low, ["no supplier", "没有供应商", "没有货源"]):
+        return 10, "客户没有明确货源，需先评估品类和供应商可得性。"
+    return 10, "访谈未充分说明货源稳定性，暂按中等风险处理。"
 
 
-def infer_client_type(flags):
-    if flags["creator"] and flags["strong_audience"] and not flags["has_product"]:
-        return "Creator / Influencer"
-    if flags["wants_distributor"]:
-        return "Wholesale / Distributor-focused Merchant"
-    if flags["wants_seeding"] and flags["has_product"]:
-        return "Brand seeking KOL/KOC exposure"
-    if flags["merchant"] and flags["has_sales"]:
-        return "Existing Ecommerce Seller / Brand"
-    if flags["zero_resource"]:
-        return "Beginner / Low-readiness Lead"
-    if flags["merchant"]:
-        return "Merchant / Seller"
-    return "Unknown / Needs more discovery"
+def score_paid(text: str) -> Tuple[int, str]:
+    low = _t(text)
+    money = max_money(text)
+    if money >= CONFIG["value_gate"]["high_budget_min"] or has_any(low, ["paid ads", "facebook ads", "google ads", "tiktok ads", "meta ads", "广告预算", "投过广告", "投放"]):
+        return 25, "客户有明确预算≥$2,000，或有过付费广告经验。"
+    if has_any(low, ["small test", "小额测试", "willing to test", "愿意测试", "try ads", "试投", "先试"]):
+        return 15, "客户有兴趣，愿意先做小额测试。"
+    if has_any(low, ["free only", "only free", "不投", "免费", "no budget", "没有预算", "不想花钱", "只要免费"]):
+        return 0, "客户只要免费工具或明确不投营销，服务优先级封顶L2自助。"
+    return 15, "客户未明确预算，但没有排斥测试，暂按愿意小额测试处理。"
 
 
-def infer_business_stage(flags):
-    if flags["zero_resource"]:
-        return "Idea stage / Not ready"
-    if flags["has_sales"] and flags["has_proof"]:
-        return "Validated / Evidence-backed"
-    if flags["has_sales"]:
-        return "Growing / Sales claimed"
-    if flags["has_product"]:
-        return "Product-ready / Sales unclear"
-    return "Early discovery"
+def score_private(text: str) -> Tuple[int, str]:
+    low = _t(text)
+    followers = extract_followers(text)
+    er_values = extract_percent_values(text)
+    if (followers >= 10000 and any(v >= 3 for v in er_values)) or has_any(low, ["er 3%", "互动率3", "成规模私域", "large community", "strong community"]):
+        return 15, "客户有成规模私域，且互动率达到或接近ER≥3%。"
+    if followers > 0 or has_any(low, ["少量私域", "some community", "small community", "微信群", "discord", "telegram", "email list", "customer list", "社群", "私域"]):
+        return 8, "客户有少量私域或社群资源。"
+    if has_any(low, ["no traffic", "没有流量", "无流量", "完全没有", "no audience"]):
+        return 0, "客户完全无线上流量。"
+    return 7, "客户没有明确私域线索，按中性处理。"
 
 
-def infer_pain_point(flags):
-    pains = []
-    if flags["needs_sourcing"]:
-        pains.append("Sourcing / supplier stability")
-    if flags["needs_traffic"]:
-        pains.append("Traffic / awareness")
-    if flags["wants_affiliate"]:
-        pains.append("Affiliate / creator sales")
-    if flags["wants_distributor"]:
-        pains.append("Distributor / reseller acquisition")
-    if flags["wants_seeding"]:
-        pains.append("UGC / KOL seeding")
-    if not pains:
-        pains.append("Not clearly confirmed")
-    return "; ".join(pains[:3])
+def score_ecommerce(text: str) -> Tuple[int, str]:
+    low = _t(text)
+    if has_any(low, ["amazon", "shopify", "tiktok shop"]):
+        return 15, "客户做过Amazon/Shopify/TikTok Shop。"
+    if has_any(low, ["etsy", "depop", "whatnot", "ebay", "walmart", "temu", "其他平台", "marketplace"]):
+        return 8, "客户做过其他电商平台。"
+    if has_any(low, ["beginner", "new to ecommerce", "新手", "没做过", "first time"]):
+        return 0, "客户属于纯新手。"
+    return 0, "访谈未体现明确电商/建站经验，暂按纯新手处理。"
 
 
-def product_readiness(flags):
-    if flags["has_product"] and flags["has_materials"]:
-        return "High：已有产品和素材"
-    if flags["has_product"]:
-        return "Medium：有产品，但素材/详情需补"
-    if flags["needs_sourcing"] and flags["has_moq_price"]:
-        return "Medium：需求较清楚，需要 sourcing 验证"
-    if flags["needs_sourcing"]:
-        return "Low-Medium：需要找货，但参数不完整"
-    return "Low / Unknown：产品方向未明确"
+def score_sales(text: str) -> Tuple[int, str]:
+    low = _t(text)
+    money = max_money(text)
+    orders = extract_order_count(text)
+    if has_any(low, ["gmv", "monthly sales", "月gmv", "销售额"]) and money >= 5000:
+        return 15, "客户近半年或近期有稳定GMV≥$5,000线索。"
+    if money >= 5000 and has_any(low, ["monthly", "每月", "month", "月"]):
+        return 15, "客户提到月度金额≥$5,000，按稳定销售线索处理。"
+    if orders > 0 or has_any(low, ["few orders", "test orders", "少量订单", "偶发销售", "some sales"]):
+        return 8, "客户有少量或偶发销售。"
+    if detect_client_type(text) == "创作者":
+        return 7, "客户像纯网红/创作者转电商，原渠道销售表现暂按不适用中性处理。"
+    if has_any(low, ["no sales", "没有销售", "没卖过", "0 sales", "无销售"]):
+        return 0, "客户没有销售记录。"
+    return 7, "访谈未明确销售记录，暂按中性处理。"
 
 
-def marketing_readiness(flags):
-    if flags["has_budget"] and (flags["wants_affiliate"] or flags["needs_traffic"] or flags["wants_seeding"]):
-        return "High-Medium：有预算/意愿，可小测"
-    if flags["strong_audience"]:
-        return "Medium：有受众/私域，但转化方式需确认"
-    if flags["wants_affiliate"]:
-        return "Medium-Low：想做分销，但佣金/样品需确认"
-    return "Low / Unknown"
+def score_materials(text: str) -> Tuple[int, str]:
+    low = _t(text)
+    has_photo = has_any(low, ["photo", "image", "产品图", "图片"])
+    has_video = has_any(low, ["video", "视频", "ugc", "素材"])
+    has_listing = has_any(low, ["listing", "selling point", "卖点", "description", "标题", "价格表"])
+    if (has_photo and has_video) or (has_photo and has_listing) or has_any(low, ["materials ready", "素材齐全", "图文视频齐全"]):
+        return 10, "客户产品图和素材较完整。"
+    if has_photo or has_video or has_listing:
+        return 5, "客户有部分素材，但还不完整。"
+    return 0, "客户几乎没有可直接用于上架或营销的素材。"
 
 
-def build_profile(text, flags, route, compliance):
-    client_type = infer_client_type(flags)
-    stage = infer_business_stage(flags)
-    money = flags["money"]
-    followers = flags["followers"]
-    scale_parts = []
-    if money:
-        scale_parts.append("提到金额：" + ", ".join(["$%s" % int(v) for v in money[:4]]))
-    if followers:
-        scale_parts.append("粉丝量：" + ", ".join([str(v) for v in followers[:4]]))
-    if flags["has_sales"] and not scale_parts:
-        scale_parts.append("有销售/订单信号，但数字未确认")
-    if not scale_parts:
-        scale_parts.append("Not confirmed")
+def calculate_scores(text: str) -> Tuple[Dict[str, int], Dict[str, str], Dict[str, Dict[str, Any]]]:
+    scorers = {
+        "supply_stability": score_supply,
+        "paid_marketing_willingness": score_paid,
+        "private_traffic": score_private,
+        "ecommerce_foundation": score_ecommerce,
+        "existing_sales": score_sales,
+        "materials_readiness": score_materials,
+    }
+    scores: Dict[str, int] = {}
+    reasons: Dict[str, str] = {}
+    for key, fn in scorers.items():
+        score, reason = fn(text)
+        scores[key] = score
+        reasons[key] = reason
 
+    axes: Dict[str, Dict[str, Any]] = {}
+    for axis_key, cfg in CONFIG["axis"].items():
+        axis_score = sum(scores[c] for c in cfg["components"])
+        max_score = cfg["max"]
+        pct = round(axis_score / max_score * 100, 1) if max_score else 0
+        status = CONFIG["readiness_labels"]["need_evidence"]
+        status_reason = "需要补充证据后再确认。"
+        if cfg.get("paid_zero_force_not_ready") and scores.get("paid_marketing_willingness", 0) == 0:
+            status = CONFIG["readiness_labels"]["not_ready"]
+            status_reason = "付费营销意愿为0，营销服务不Ready。"
+        elif axis_score >= cfg["ready_min"]:
+            status = CONFIG["readiness_labels"]["ready"]
+            status_reason = "该轴关键条件已基本具备。"
+        elif axis_score <= cfg["not_ready_max"]:
+            status = CONFIG["readiness_labels"]["not_ready"]
+            status_reason = "该轴核心条件不足。"
+        axes[axis_key] = {
+            "label": cfg["label"],
+            "score": axis_score,
+            "max": max_score,
+            "pct": pct,
+            "status": status,
+            "reason": status_reason,
+            "components": {c: scores[c] for c in cfg["components"]},
+        }
+    return scores, reasons, axes
+
+# ============================================================
+# 服务组合、营销子类型、优先级
+# ============================================================
+
+def readiness_not_ready_count(axes: Dict[str, Dict[str, Any]]) -> int:
+    return sum(1 for a in axes.values() if a["status"] == "Not Ready")
+
+
+def determine_marketing_subtypes(text: str, compliance: str, scores: Dict[str, int]) -> Tuple[List[str], List[str]]:
+    low = _t(text)
+    pains = detect_pain_points(text)
+    features = detect_product_features(text)
+    page_data = detect_page_data_foundation(text)
+    subtypes: List[str] = []
+    reasons: List[str] = []
+
+    if compliance == "红线":
+        return [], ["红线品类不进入营销服务判断。"]
+
+    # AI矩阵号：冷启动/内容蓄水/没有私域但需要流量
+    if ("Traffic / Ads" in pains or "Content / UGC" in pains or scores.get("private_traffic", 0) in [0, 7]) and scores.get("paid_marketing_willingness", 0) > 0:
+        subtypes.append("AI社媒矩阵号")
+        reasons.append("客户存在冷启动、内容蓄水或流量基础不足的问题。")
+
+    # CPS：强展示、可寄样、达人/佣金/内容带货
+    if (features["强展示"] or features["可寄样"]) and ("Affiliate / Creator Sales" in pains or has_any(low, ["commission", "佣金", "creator", "kol", "koc", "网红", "带货"])):
+        subtypes.append("CPS网红营销")
+        reasons.append("产品具备展示/寄样条件，且客户有达人带货或佣金诉求。")
+
+    # CPL分销员：渠道私域/分销驱动
+    if "Distributor / Reseller" in pains or has_any(low, ["分销员", "代理", "reseller", "distributor", "渠道", "私域分销"]):
+        subtypes.append("CPL分销员")
+        reasons.append("客户诉求偏渠道型/私域型分销。")
+
+    # CPL Leads：B2B/OEM/工厂/批发/长决策链
+    if "B2B Leads" in pains or features["B2B长决策"]:
+        subtypes.append("CPL Leads")
+        reasons.append("客户更像B2B、批发、OEM或高客单询盘型需求。")
+
+    # CPC：页面+数据基础+预算ready，快速测品放量
+    page_ready = page_data["站点"] and (page_data["Pixel"] or page_data["GA4"] or page_data["归因"])
+    if page_ready and scores.get("paid_marketing_willingness", 0) == 25:
+        subtypes.append("CPC投放")
+        reasons.append("客户页面和追踪基础较完整，并且预算或投放经验明确。")
+
+    # 灰色只能CPL，CPC/CPS待审批
+    if compliance == "灰色":
+        allowed = [s for s in subtypes if s in ["CPL分销员", "CPL Leads"]]
+        if not allowed:
+            allowed = ["CPL Leads"] if features["B2B长决策"] else ["CPL分销员"]
+        return allowed, ["灰色品类默认只能走CPL；CPC/CPS需审批后再判断。"]
+
+    # 去重保序
+    unique = []
+    for s in subtypes:
+        if s not in unique:
+            unique.append(s)
+    return unique, reasons or ["访谈中营销诉求不够明确，建议先补问预算、页面基础和获客目标。"]
+
+
+def determine_service_combo(text: str, axes: Dict[str, Dict[str, Any]], evidence: str, compliance: str, scores: Dict[str, int]) -> Dict[str, Any]:
+    if compliance == "红线":
+        return {
+            "combo": ["合规否决"],
+            "main": "合规否决",
+            "aux": "不进入付款、广告或sourcing流程",
+            "rhythm": "待培育",
+            "reason": "该客户/商品命中红线合规风险，需先停止推进。",
+        }
+
+    axis_status = {k: v["status"] for k, v in axes.items()}
+    not_ready = [k for k, s in axis_status.items() if s == "Not Ready"]
+    ready = [k for k, s in axis_status.items() if s == "Ready"]
+    need_evidence = [k for k, s in axis_status.items() if s == "待补证据"]
+
+    service_map = {"Sourcing": "Sourcing", "Marketing": "营销", "Build": "建站自助"}
+    axis_cn = {"Sourcing": "货源稳定性", "Marketing": "营销", "Build": "建站/素材"}
+
+    if len(ready) == 3:
+        return {
+            "combo": ["Sourcing", "建站自助", "营销"],
+            "main": "全链路服务",
+            "aux": "按里程碑分阶段推进：先确认商品与合规，再建站上架，最后进入营销测试。",
+            "rhythm": "长周期",
+            "reason": "三轴均Ready，适合做sourcing、建站和营销联动，但应按阶段推进。",
+        }
+
+    if len(not_ready) == 1 and len(ready) >= 2:
+        missing_axis = not_ready[0]
+        combo = [service_map[x] for x in ready] + [f"精准补齐{axis_cn[missing_axis]}"]
+        return {
+            "combo": combo,
+            "main": f"精准补齐{axis_cn[missing_axis]}",
+            "aux": f"其余已就绪项：{ '、'.join(service_map[x] for x in ready) }。",
+            "rhythm": "快转化" if scores.get("paid_marketing_willingness", 0) > 0 else "待培育",
+            "reason": f"只有{axis_cn[missing_axis]}为Not Ready，其余关键条件已具备，应精准补短板。",
+        }
+
+    if len(not_ready) >= 2 and evidence == "低":
+        return {
+            "combo": ["Nurture"],
+            "main": "待培育",
+            "aux": "先补基础信息和证据，不进入重投入流程。",
+            "rhythm": "待培育",
+            "reason": "两轴以上Not Ready且证据不足，当前不适合进入正式服务流程。",
+        }
+
+    combo = [service_map[x] for x in ready]
+    if need_evidence:
+        combo.append("补证据后重跑")
+    if not_ready:
+        combo.extend([f"补齐{axis_cn[x]}" for x in not_ready])
+    if not combo:
+        combo = ["Nurture"]
     return {
-        "Client Type": client_type,
-        "Business Stage": stage,
-        "Compliance": compliance,
-        "Main Pain Point": infer_pain_point(flags),
-        "Product Readiness": product_readiness(flags),
-        "Marketing Readiness": marketing_readiness(flags),
-        "Business Scale": "; ".join(scale_parts),
-        "Best Route": route,
-        "Evidence": evidence_level(flags)[0],
+        "combo": combo,
+        "main": "先补证据再推进" if need_evidence else "轻量验证",
+        "aux": "高就绪但低置信时，不直接降级；先补Missing Info后重跑。",
+        "rhythm": "待培育" if len(not_ready) >= 2 else "快转化",
+        "reason": "客户存在部分Ready和部分待确认项，建议先补关键信息后再分配资源。",
     }
 
 
-def build_next_steps(flags, route, compliance, evidence, missing):
-    if compliance == "Red":
-        internal = ["记录红线原因，不进入 sourcing / payment / advertising pipeline。", "如客户愿意，要求其更换合规类目后重新评估。"]
-        client = "Thanks for sharing this. Based on our current policy, this category is not something we can support. If you have another product category, I’m happy to review that instead."
-        do_not = ["不要讨论 Stripe、CPC、CPS 或具体采购执行。", "不要给出任何可推进的暗示。"]
-        return internal, client, do_not
-    if compliance == "Gray":
-        internal = ["先收集合规材料：成分/证书/页面文案/广告宣称/产品图。", "审批前只做轻量沟通；如必须测试，优先 CPL。"]
-        client = "Before we talk about traffic or sales channels, I’d like to confirm the compliance side first. Could you share the product page claims, ingredient/certification documents, and any ad copy you plan to use?"
-        do_not = ["审批前不要承诺 CPC/CPS/Stripe。", "不要使用保证效果、治疗、减肥、美白等表达。"]
-        return internal, client, do_not
+def determine_value_and_priority(scores: Dict[str, int], axes: Dict[str, Dict[str, Any]], service: Dict[str, Any], evidence: str) -> Tuple[str, str, str]:
+    paid = scores.get("paid_marketing_willingness", 0)
+    if paid == 0:
+        return "低", "待培育", "付费意愿为0，优先级封顶L2自助，不因其他轴齐备而进入高优先级。"
+    if service["main"] == "全链路服务":
+        value = "高" if paid == 25 else "中"
+        return value, "长周期", "三轴均Ready，属于长周期客户，应按里程碑推进，不因周期长被误杀。"
+    if paid == 25:
+        return "高", service.get("rhythm", "快转化"), "付费意愿高或预算≥$2,000，整体优先级上抬一档。"
+    if evidence == "低":
+        return "中", "待培育", "客户有一定意向但证据不足，先补证据后再确认节奏。"
+    return "中", service.get("rhythm", "快转化"), "客户具备一定服务价值，可按当前主方案推进。"
 
-    internal = []
-    do_not = []
+# ============================================================
+# 动作、Missing Info、AM Checklist
+# ============================================================
 
-    if "Sourcing" in route:
-        internal.extend(["先让 BD 补齐目标价、MOQ、定制范围和参考图。", "Sourcing 只做 2-3 个轻量款式/报价初筛，先不要深度开发。"])
-        client = "Based on what you shared, I think the first step should be validating the sourcing side — especially target price, MOQ, customization, and sample expectations. Once we know the product can work, we can decide whether MyyBiz Store, CPS, or another route makes sense."
-    elif "Co-Creation" in route:
-        internal.extend(["先确认 creator 受众画像、内容表现、产品创意和可投入的 launch 内容。", "不要按普通 merchant 推建站；先判断是否能形成 hero product。"])
-        client = "It sounds like your biggest value is your audience and creative direction. I’d suggest we first explore whether there’s a product idea that feels authentic to your personal brand, then we can discuss how DHgate can support product development, sampling, and launch."
-    elif "CPL" in route:
-        internal.extend(["确认目标 lead 画像：地区、行业、职位/店铺类型、表单字段。", "确认谁负责 24-48 小时内 follow up leads。"])
-        client = "Since you’re mainly trying to find resellers or distributors, I think a lead-generation approach makes more sense than just driving traffic. Let’s define what a qualified lead looks like first, then we can test CPL."
-    elif "CPS" in route or "Affiliate" in route:
-        internal.extend(["先测算佣金空间：产品成本、履约成本、可给佣金比例。", "确认样品数量、creator profile 和 tracking link 设置。"])
-        client = "Since you’re interested in affiliate or creator-driven sales, the next step is to confirm whether the margin can support commission and whether you can provide samples/content assets for a small test."
-    elif "CPC" in route:
-        internal.extend(["确认投放预算、目标 CPA/ROAS、素材和落地页准备度。", "预算或素材不清前，不启动投放。"])
-        client = "If traffic is the main goal, we can look at a small CPC test, but I’d first want to confirm your test budget, product page, creative materials, and what result would count as success."
-    elif "Myyshop" in route:
-        internal.extend(["确认样品数量、目标 KOL/KOC 画像、内容交付形式和时间线。", "先做小批量 seeding，不承诺大规模销售。"])
-        client = "It sounds like product seeding and creator content may be the right first step. Let’s define the creator profile, sample quantity, and what content outcome matters most — UGC, reviews, unboxing, or livestream."
-    elif "Store" in route:
-        internal.extend(["确认 SKU、产品素材、价格、库存、收款和履约准备。", "安排 5 分钟 MyyBiz Store demo，但只讲与客户痛点相关的部分。"])
-        client = "Based on your current setup, MyyBiz may help as a lightweight store and order-management tool. Before a demo, I’d like to confirm your SKU list, product assets, pricing, and payment/fulfillment setup."
+def missing_info(text: str, axes: Dict[str, Dict[str, Any]], service: Dict[str, Any], marketing_subtypes: List[str]) -> Tuple[List[str], List[str]]:
+    low = _t(text)
+    needed = []
+    not_applicable = []
+    combo_text = " ".join(service.get("combo", []))
+
+    if "Sourcing" in combo_text or "货源" in combo_text:
+        checks = [
+            ("目标采购价/目标零售价", ["target price", "采购价", "零售价", "retail price"]),
+            ("可接受MOQ和首单预算", ["moq", "起订量", "首单预算"]),
+            ("是否现货、轻定制或全定制", ["custom", "定制", "logo", "packaging", "现货"]),
+            ("参考链接/图片/样品", ["reference", "链接", "图片", "sample", "样品"]),
+        ]
+        for item, kws in checks:
+            if not has_any(low, kws):
+                needed.append(item)
     else:
-        internal.extend(["轻量 nurture：发自助教程/爆品清单/基础问卷。", "等客户有明确产品、预算、渠道或销售证明后再升级。"])
-        client = "I think it may be better to start lighter for now. If you can share a clearer product direction, rough budget, or current selling channel, I can better decide which resources are actually useful for you."
+        not_applicable.append("当前主方案不涉及深度sourcing，暂不需要MOQ/打样细节。")
 
-    if evidence == "Low":
-        internal.append("先要证据，不要直接给高优先级：店铺链接、截图、订单、素材或预算范围。")
-        do_not.append("不要因为客户口述 GMV、粉丝或资源就直接判断为 A 类。")
-    if "目标采购价 / 零售价 / 毛利" in missing or "MOQ / 首单预算" in missing:
-        do_not.append("价格、MOQ 和预算不清前，不要让 sourcing 深度投入。")
-    if "佣金比例 / Affiliate 结构" in missing and ("CPS" in route or "Affiliate" in route):
-        do_not.append("佣金结构不清前，不要承诺 affiliate/CPS 效果。")
-    if not do_not:
-        do_not.append("不要一次性介绍所有产品线，只讲当前客户最相关的一条路径。")
-    return internal, client, do_not
-
-
-def closing_questions(route, missing):
-    route_questions = []
-    if "Sourcing" in route:
-        route_questions = [
-            "Could you send 1-2 reference links or images so our sourcing team can match the exact style?",
-            "What target purchase price and first-order quantity would make this worth testing?",
-            "Which requirements are must-have versus flexible — logo, packaging, material, size, or color?",
+    if "建站" in combo_text:
+        checks = [
+            ("产品图、视频、卖点、价格表", ["产品图", "video", "素材", "卖点", "price list"]),
+            ("站点/域名/收款方式是否已有", ["website", "domain", "stripe", "站点", "域名", "收款"]),
         ]
-    elif "Co-Creation" in route:
-        route_questions = [
-            "What product idea feels most authentic to your audience and personal brand?",
-            "Can you share your best-performing content examples and audience profile?",
-            "How involved do you want to be in design, sampling review, and launch promotion?",
-        ]
-    elif "CPL" in route:
-        route_questions = [
-            "What does a qualified reseller/distributor look like for you?",
-            "Which region or customer segment should we target first?",
-            "Who on your side will follow up with leads within 24-48 hours?",
-        ]
-    elif "CPS" in route or "Affiliate" in route:
-        route_questions = [
-            "What commission range can your margin support after product and fulfillment cost?",
-            "How many samples can you provide for the first creator/affiliate test?",
-            "What creator profile fits your product best — platform, niche, audience, and content style?",
-        ]
-    elif "Myyshop" in route:
-        route_questions = [
-            "What content outcome matters most: UGC, review, unboxing, livestream, or conversion?",
-            "How many samples can you provide for the first seeding batch?",
-            "Which creator niche and platform are the best match for this product?",
-        ]
+        for item, kws in checks:
+            if not has_any(low, kws):
+                needed.append(item)
     else:
-        route_questions = [
-            "What is the one product/category you want to test first?",
-            "What channel are you currently using to reach customers?",
-            "What rough budget or resource can you commit to the first small test?",
-        ]
+        not_applicable.append("当前主方案不以建站为核心，可暂不补完整上架素材。")
 
-    missing_map = {
-        "GMV / 订单量 / 生意规模": "Roughly, is this currently test orders or stable monthly volume?",
-        "销售证明 / 店铺链接 / 截图": "If we move forward, could you share a store link or simple screenshot so our team can prioritize it?",
-        "目标采购价 / 零售价 / 毛利": "Do you have a target purchase price and retail price range in mind?",
-        "MOQ / 首单预算": "What first-order quantity or MOQ would feel comfortable for you?",
-        "定制范围": "Are you looking for existing products, light customization, or full custom development?",
-        "营销预算 / 广告经验": "Would you be open to a small paid test, or do you prefer a commission-based model first?",
-        "收款 / Stripe / 履约": "Do you already have payment and fulfillment set up, or would you need support there?",
+    if "营销" in combo_text or marketing_subtypes:
+        if "CPC投放" in marketing_subtypes:
+            checks = [
+                ("广告预算和见效预期", ["budget", "预算", "roas", "cpa"]),
+                ("Pixel/GA4/UTM/归因是否ready", ["pixel", "ga4", "utm", "tracking", "归因"]),
+                ("落地页/商品页是否ready", ["landing page", "product page", "页面", "website"]),
+            ]
+            for item, kws in checks:
+                if not has_any(low, kws):
+                    needed.append(item)
+        if "CPS网红营销" in marketing_subtypes:
+            checks = [
+                ("可寄样数量和样品成本", ["sample", "寄样", "样品"]),
+                ("佣金比例/毛利空间", ["commission", "佣金", "margin", "毛利"]),
+                ("达人内容要求和禁忌", ["creator brief", "内容要求", "禁忌"]),
+            ]
+            for item, kws in checks:
+                if not has_any(low, kws):
+                    needed.append(item)
+        if "CPL分销员" in marketing_subtypes:
+            checks = [
+                ("目标分销员画像", ["distributor", "reseller", "分销员", "代理"]),
+                ("分销佣金/价格体系", ["commission", "佣金", "price tier", "价格体系"]),
+            ]
+            for item, kws in checks:
+                if not has_any(low, kws):
+                    needed.append(item)
+        if "CPL Leads" in marketing_subtypes:
+            checks = [
+                ("Lead跟进SOP和24小时负责人", ["24h", "follow up", "跟单", "负责人"]),
+                ("询盘表单字段和报价模板", ["lead form", "表单", "报价模板", "quote template"]),
+                ("客单价/LTV或批发MOQ", ["aov", "ltv", "客单价", "moq", "批发"]),
+            ]
+            for item, kws in checks:
+                if not has_any(low, kws):
+                    needed.append(item)
+        if "AI社媒矩阵号" in marketing_subtypes:
+            checks = [
+                ("3-5个核心卖点和内容方向", ["selling point", "卖点", "content angle", "内容方向"]),
+                ("可持续输出素材的来源", ["素材", "video", "图片", "ugc"]),
+            ]
+            for item, kws in checks:
+                if not has_any(low, kws):
+                    needed.append(item)
+    else:
+        not_applicable.append("当前主方案不涉及营销测试，可暂不补Pixel/达人/广告预算细节。")
+
+    # 去重
+    needed_unique = []
+    for item in needed:
+        if item not in needed_unique:
+            needed_unique.append(item)
+    not_app_unique = []
+    for item in not_applicable:
+        if item not in not_app_unique:
+            not_app_unique.append(item)
+    return needed_unique, not_app_unique
+
+
+def next_actions_by_pain(text: str, service: Dict[str, Any], marketing_subtypes: List[str]) -> List[Dict[str, str]]:
+    pains = detect_pain_points(text)
+    combo_text = " ".join(service.get("combo", []))
+    rows: List[Dict[str, str]] = []
+
+    templates = {
+        "Sourcing": {
+            "内部动作": "先让BD确认目标价、MOQ、定制范围和可接受交期；Sourcing只做轻量初筛，不先深度开发。",
+            "对客户说的动作": "我们先把商品需求确认清楚，包括目标价格、MOQ、是否定制和参考款式，再判断能否进入报价或样品阶段。",
+        },
+        "Traffic / Ads": {
+            "内部动作": "先检查页面、Pixel/GA4、预算和素材是否ready，再判断用CPC还是AI社媒矩阵号冷启动。",
+            "对客户说的动作": "如果目标是拉新或放量，我们需要先确认页面和追踪是否准备好，再决定是先做内容蓄水还是直接投放测试。",
+        },
+        "Affiliate / Creator Sales": {
+            "内部动作": "确认产品是否可寄样、佣金空间、达人brief和履约能力，再判断CPS网红营销是否可做。",
+            "对客户说的动作": "如果想让达人帮你卖货，我们需要先确认样品、佣金比例和产品卖点，这样才能匹配合适的创作者。",
+        },
+        "Distributor / Reseller": {
+            "内部动作": "明确目标分销员画像、价格体系和佣金规则，优先走CPL分销员而不是普通广告。",
+            "对客户说的动作": "如果你想找分销员或代理，我们会先帮你把目标人群、佣金和价格体系确认清楚，再设计获客表单。",
+        },
+        "B2B Leads": {
+            "内部动作": "确认Lead表单字段、报价模板、客单价/LTV和24小时跟单负责人，优先走CPL Leads。",
+            "对客户说的动作": "如果你的客户决策链比较长，我们建议先用询盘型线索收集，再用固定模板快速跟进报价。",
+        },
+        "Store Setup": {
+            "内部动作": "检查产品图、视频、卖点、价格、库存和收款方式；先做能上线的最小店铺版本。",
+            "对客户说的动作": "我们可以先帮你确认上架需要的素材和价格信息，优先把基础店铺跑通，再接后续营销。",
+        },
+        "Conversion": {
+            "内部动作": "先看商品页、价格、信任背书和转化路径，不直接加大投放。",
+            "对客户说的动作": "如果目前有流量但转化不理想，我们建议先优化页面、卖点和购买路径，再考虑加预算。",
+        },
+        "Content / UGC": {
+            "内部动作": "先整理3-5个内容角度和素材来源，适合AI社媒矩阵号或KOL/KOC种草。",
+            "对客户说的动作": "我们可以先从内容角度切入，把产品卖点转成短视频/社媒内容，再看是否进入达人或投放测试。",
+        },
+        "Not clear": {
+            "内部动作": "先不要分配重资源；用closing questions补齐客户品类、渠道、预算、供应链和推广目标。",
+            "对客户说的动作": "我先帮你把当前情况整理一下，再确认几个关键点，这样后续才能匹配到最合适的支持方式。",
+        },
     }
-    extra = [missing_map[m] for m in missing if m in missing_map]
-    qs = []
-    for q in route_questions + extra:
-        if q not in qs:
-            qs.append(q)
-    return qs[:6]
+
+    for p in pains:
+        tpl = templates.get(p)
+        if tpl:
+            rows.append({"Pain Point": p, **tpl})
+
+    # 如果服务组合命中了但pain没有识别，补服务导向动作
+    if "Sourcing" in combo_text and all(r["Pain Point"] != "Sourcing" for r in rows):
+        rows.append({"Pain Point": "Sourcing", **templates["Sourcing"]})
+    if "建站" in combo_text and all(r["Pain Point"] != "Store Setup" for r in rows):
+        rows.append({"Pain Point": "Store Setup", **templates["Store Setup"]})
+    if "营销" in combo_text and all(r["Pain Point"] not in ["Traffic / Ads", "Affiliate / Creator Sales", "Distributor / Reseller", "B2B Leads", "Content / UGC"] for r in rows):
+        if marketing_subtypes:
+            subtype = marketing_subtypes[0]
+            p = {
+                "AI社媒矩阵号": "Content / UGC",
+                "CPS网红营销": "Affiliate / Creator Sales",
+                "CPL分销员": "Distributor / Reseller",
+                "CPL Leads": "B2B Leads",
+                "CPC投放": "Traffic / Ads",
+            }.get(subtype, "Traffic / Ads")
+            rows.append({"Pain Point": p, **templates[p]})
+    return rows
 
 
-def crm_note(profile, route, priority, confidence, internal, client_msg, missing, human_route=None, human_reason=None):
-    final_route = human_route if human_route and human_route != "Use system recommendation" else route
-    note = f"""Client Profile Summary
-- Client Type: {profile['Client Type']}
-- Business Stage: {profile['Business Stage']}
-- Compliance: {profile['Compliance']}
-- Current Scale: {profile['Business Scale']}
-- Main Pain Point: {profile['Main Pain Point']}
-- Product Readiness: {profile['Product Readiness']}
-- Marketing Readiness: {profile['Marketing Readiness']}
-
-Recommendation
-- System Route: {route}
-- Final Route: {final_route}
-- Priority: {priority}
-- Confidence: {confidence}
-
-Internal Next Steps
-"""
-    for i, item in enumerate(internal, 1):
-        note += f"{i}. {item}\n"
-    note += "\nMissing Info\n"
-    if missing:
-        for i, item in enumerate(missing[:8], 1):
-            note += f"{i}. {item}\n"
-    else:
-        note += "No major missing info detected.\n"
-    note += "\nClient-facing Follow-up\n" + client_msg + "\n"
-    if human_reason:
-        note += "\nHuman Review Reason\n" + human_reason + "\n"
-    return note
-
-
-def detect_scope(text, flags):
-    hits = keyword_hit(text, ECOMMERCE_SCOPE_KEYWORDS)
-    strong_flags = [
-        "merchant", "has_sales", "has_product", "needs_sourcing", "needs_traffic",
-        "wants_affiliate", "wants_distributor", "wants_seeding", "has_moq_price",
-        "has_materials", "strong_audience"
-    ]
-    signal_count = sum(1 for k in strong_flags if flags.get(k))
-    if len((text or "").strip()) < 80:
-        return "Low", hits[:8], "输入内容较短，系统很难判断客户是否属于电商/分销相关场景。"
-    if signal_count >= 3 or len(hits) >= 4:
-        return "High", hits[:8], "已识别到较明显的电商/分销业务信号。"
-    if signal_count >= 1 or len(hits) >= 2:
-        return "Medium", hits[:8], "识别到部分电商相关信号，但信息仍不完整。"
-    return "Low", hits[:8], "没有识别到明显的商品、销售渠道、GMV、供应链、分销或推广信号。"
+def build_am_checklist(service: Dict[str, Any], marketing_subtypes: List[str]) -> List[Dict[str, str]]:
+    combo = service.get("combo", [])
+    tasks: List[Dict[str, str]] = []
+    if any("Sourcing" in c or "货源" in c for c in combo):
+        tasks.extend([
+            {"服务": "Sourcing", "阶段": "需求确认", "任务": "确认品类、目标价、MOQ、定制范围、交期", "状态": "待跟进"},
+            {"服务": "Sourcing", "阶段": "合规初筛", "任务": "确认是否红线/灰色/合规", "状态": "待跟进"},
+            {"服务": "Sourcing", "阶段": "供应商初筛", "任务": "轻量匹配2-3个可行供应商或替代款", "状态": "待跟进"},
+            {"服务": "Sourcing", "阶段": "报价/MOQ", "任务": "输出报价区间、MOQ、样品/定制成本", "状态": "待跟进"},
+        ])
+    if any("建站" in c for c in combo):
+        tasks.extend([
+            {"服务": "建站自助", "阶段": "素材收集", "任务": "收集产品图、视频、卖点、价格、库存", "状态": "待跟进"},
+            {"服务": "建站自助", "阶段": "页面准备", "任务": "确认商品页结构、FAQ、信任背书", "状态": "待跟进"},
+            {"服务": "建站自助", "阶段": "收款/数据", "任务": "确认Stripe/收款、Pixel/GA4/表单/WhatsApp", "状态": "待跟进"},
+            {"服务": "建站自助", "阶段": "上线检查", "任务": "完成上架、下单路径和归因检查", "状态": "待跟进"},
+        ])
+    if any("营销" in c for c in combo) or marketing_subtypes:
+        for subtype in marketing_subtypes or ["营销待定"]:
+            if subtype == "AI社媒矩阵号":
+                tasks.append({"服务": subtype, "阶段": "内容方向", "任务": "确认3-5个核心卖点、内容角度和素材来源", "状态": "待跟进"})
+            elif subtype == "CPS网红营销":
+                tasks.append({"服务": subtype, "阶段": "达人带货准备", "任务": "确认样品、佣金、达人brief、履约能力", "状态": "待跟进"})
+            elif subtype == "CPL分销员":
+                tasks.append({"服务": subtype, "阶段": "分销招募", "任务": "确认分销员画像、佣金、价格体系和申请表单", "状态": "待跟进"})
+            elif subtype == "CPL Leads":
+                tasks.append({"服务": subtype, "阶段": "Lead承接", "任务": "确认表单字段、报价模板和24小时跟单负责人", "状态": "待跟进"})
+            elif subtype == "CPC投放":
+                tasks.append({"服务": subtype, "阶段": "投放检查", "任务": "确认页面、Pixel/GA4/UTM、预算和素材", "状态": "待跟进"})
+            else:
+                tasks.append({"服务": "营销", "阶段": "渠道确认", "任务": "确认适合AI矩阵号/CPS/CPL/CPC中的哪一种", "状态": "待跟进"})
+    if not tasks:
+        tasks.append({"服务": "Nurture", "阶段": "基础信息", "任务": "补齐客户品类、渠道、预算、销售记录和需求", "状态": "待跟进"})
+    return tasks
 
 
-def analyze_text(text, manual_compliance="Auto"):
-    compliance, hits = compliance_level(text, manual_compliance)
-    flags = detect_flags(text)
-    scope_level, scope_hits, scope_reason = detect_scope(text, flags)
-    present, missing = missing_info(text)
-    product_s, client_s, channel_s, raw = score_from_flags(flags)
-    evidence, multiplier = evidence_level(flags)
-    adjusted = round(raw * multiplier, 1)
-    route = recommend_route(flags, compliance)
-    priority = priority_from_score(adjusted, compliance)
-    conf = confidence_level(flags, len(missing))
-    profile = build_profile(text, flags, route, compliance)
-    internal, client_msg, do_not = build_next_steps(flags, route, compliance, evidence, missing)
-    qs = closing_questions(route, missing)
+def make_client_profile(text: str, scores: Dict[str, int], axes: Dict[str, Dict[str, Any]], service: Dict[str, Any], marketing_subtypes: List[str], compliance: str, evidence: str) -> Dict[str, str]:
+    page_data = detect_page_data_foundation(text)
+    features = detect_product_features(text)
+    page_summary = " / ".join([f"{k}:{'Ready' if v else '未确认'}" for k, v in page_data.items()])
+    feature_summary = " / ".join([k for k, v in features.items() if v]) or "未确认"
     return {
-        "compliance": compliance,
-        "compliance_hits": hits,
-        "flags": flags,
-        "scope_level": scope_level,
-        "scope_hits": scope_hits,
-        "scope_reason": scope_reason,
-        "present": present,
-        "missing": missing,
-        "scores": {"Product/Sourcing": product_s, "Client Value": client_s, "Channel Fit": channel_s, "Raw": raw, "Adjusted": adjusted},
-        "evidence": evidence,
-        "route": route,
-        "priority": priority,
-        "confidence": conf,
-        "profile": profile,
-        "internal": internal,
-        "client_msg": client_msg,
-        "do_not": do_not,
-        "questions": qs,
+        "客户类型": detect_client_type(text),
+        "主要痛点": "、".join(detect_pain_points(text)),
+        "客单价/LTV": detect_aov_ltv(text),
+        "页面与数据基础": page_summary,
+        "产品特征": feature_summary,
+        "Sourcing就绪度": axes["Sourcing"]["status"],
+        "营销就绪度": axes["Marketing"]["status"],
+        "建站就绪度": axes["Build"]["status"],
+        "服务组合": "、".join(service["combo"]),
+        "营销子类型": "、".join(marketing_subtypes) if marketing_subtypes else "不适用/待确认",
+        "合规档": compliance,
+        "证据置信度": evidence,
     }
 
 
-def render_profile(profile):
-    cols = st.columns(3)
-    items = list(profile.items())
-    for idx, (k, v) in enumerate(items):
-        with cols[idx % 3]:
-            st.markdown(f"<div class='big-card'><div class='metric-title'>{k}</div><div class='metric-value'>{v}</div></div>", unsafe_allow_html=True)
+def build_reason(compliance_reason: str, service_reason: str, value_reason: str, evidence_reason: str) -> str:
+    return f"{service_reason} {value_reason} 证据判断：{evidence_reason} 合规判断：{compliance_reason}"
 
 
-def render_results(result, evaluator="", client_code=""):
-    compliance = result["compliance"]
-    card_class = "danger-card" if compliance == "Red" else "warn-card" if compliance == "Gray" else "route-card"
-    st.markdown(
-        f"""
-        <div class='{card_class}'>
-            <div class='metric-title'>Recommended Route</div>
-            <div style='font-size:1.65rem;font-weight:800;'>{result['route']}</div>
-            <div style='margin-top:8px;'>{ROUTE_DESCRIPTIONS.get(result['route'].split(' → ')[0], ROUTE_DESCRIPTIONS.get(result['route'], ''))}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+def build_export_row(client_code: str, profile: Dict[str, str], pain_points: List[str], service: Dict[str, Any], marketing_subtypes: List[str], compliance: str, value_tier: str, rhythm: str, evidence: str, reason: str, checklist_summary: str, status: str) -> Dict[str, str]:
+    row = {
+        "客户编号": client_code or f"未命名-{datetime.now().strftime('%Y%m%d%H%M')}",
+        "ClientType": profile.get("客户类型", "待确认"),
+        "PainPoint": "、".join(pain_points),
+        "Sourcing就绪度": profile.get("Sourcing就绪度", ""),
+        "营销就绪度": profile.get("营销就绪度", ""),
+        "建站就绪度": profile.get("建站就绪度", ""),
+        "服务组合": profile.get("服务组合", ""),
+        "主方案": service.get("main", ""),
+        "营销子类型": "、".join(marketing_subtypes) if marketing_subtypes else "",
+        "合规档": compliance,
+        "价值档": value_tier,
+        "节奏": rhythm,
+        "证据置信度": evidence,
+        "SystemRoute": service.get("main", ""),
+        "归因说明": reason,
+        "AM阶段状态": checklist_summary,
+        "Status": status,
+    }
+    return {field: row.get(field, "") for field in CONFIG["lark_fields"]}
+
+
+def csv_bytes(row: Dict[str, str]) -> bytes:
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=CONFIG["lark_fields"])
+    writer.writeheader()
+    writer.writerow(row)
+    return output.getvalue().encode("utf-8-sig")
+
+# ============================================================
+# Streamlit UI
+# ============================================================
+
+st.set_page_config(page_title="Client Profile & Route Recommender", page_icon="🧭", layout="wide")
+
+st.title("🧭 Client Profile & Route Recommender")
+st.caption("三轴就绪度 + 服务组合建议 + AM跟进Checklist｜面向电商卖家/品牌/分销/创作者客户")
+
+with st.expander("适用范围说明｜请先看", expanded=True):
+    st.info(
+        "本工具主要适用于电商卖家、品牌方、分销商、创作者/KOL/KOC、独立站或平台卖家等客户画像分析。"
+        "如果访谈内容与商品、销售渠道、流量、GMV、供应链、分销、达人推广等无关，系统结果可能不适合直接使用。"
     )
 
-    if result.get("scope_level") == "Low":
-        st.warning("系统没有识别到明显的电商/分销业务信号，本次分析置信度较低。请先确认该客户是否属于电商卖家、品牌方、创作者或分销相关客户；如果不是，请不要直接使用系统生成的客户画像和 follow-up 文案。")
-    elif result.get("scope_level") == "Medium":
-        st.info("系统只识别到部分电商/分销业务信号。建议补充品类、销售渠道、订单/GMV、预算、供应链需求或推广目标后再做最终判断。")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Priority", result["priority"], help="A/B：优先推进；C：先验证信息；D/E：暂缓或低频跟进；Compliance/Reject：先按合规处理。")
-    c2.metric("Confidence", result["confidence"], help="系统对本次判断的把握程度。信息越完整、证据越多，置信度越高。")
-    c3.metric("Evidence", result["evidence"], help="High：有截图/订单/后台/店铺链接；Medium：口述 + 部分材料；Low：只有口述。")
-    c4.metric("Adjusted Score", result["scores"]["Adjusted"], help="0–100 分，越高越适合进入下一步。Adjusted Score 会根据信息缺失、证据强弱和合规风险做保守调整。")
-    st.caption("评分说明：0–100 分；A/B=优先推进，C=先补关键信息，D/E=暂缓或轻量跟进。Raw 是原始分，Adjusted 会因证据不足或信息缺失而下调。")
-
-    st.subheader("Client Profile 客户画像")
-    render_profile(result["profile"])
-
-    st.subheader("What should we do next?")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Internal Next Steps（内部动作）**")
-        for item in result["internal"]:
-            st.write("- " + item)
-    with col2:
-        st.markdown("**Do Not Do Yet（暂时不要做）**")
-        for item in result["do_not"]:
-            st.write("- " + item)
-
-    st.markdown("**Client-facing Follow-up（可发客户）**")
-    st.markdown(f"<div class='copy-box'>{result['client_msg']}</div>", unsafe_allow_html=True)
-
-    with st.expander("Missing Info & Closing Questions（缺失信息 + 收尾确认问题）", expanded=True):
-        st.markdown("**Missing Info**")
-        if result["missing"]:
-            for item in result["missing"][:10]:
-                st.write("- " + item)
-        else:
-            st.write("No major missing info detected.")
-        st.markdown("**2-minute closing questions**")
-        for q in result["questions"]:
-            st.write("- " + q)
-
-    with st.expander("Scoring Details（评分细节，可选查看）", expanded=False):
-        st.caption("Raw Score 是系统根据访谈内容直接计算出的原始分数；Adjusted Score 会根据证据强弱、合规风险、信息缺失程度保守调整。客户口头描述很多但缺少证明时，最终分数会被下调。")
-        score_df = pd.DataFrame([
-            {"Dimension": "Product / Sourcing", "Score": result["scores"]["Product/Sourcing"]},
-            {"Dimension": "Client Value", "Score": result["scores"]["Client Value"]},
-            {"Dimension": "Channel Fit", "Score": result["scores"]["Channel Fit"]},
-            {"Dimension": "Raw Overall", "Score": result["scores"]["Raw"]},
-            {"Dimension": "Adjusted Overall", "Score": result["scores"]["Adjusted"]},
-        ])
-        st.dataframe(score_df, use_container_width=True, hide_index=True)
-        if result["compliance_hits"]:
-            st.write("Compliance hits:", ", ".join(result["compliance_hits"]))
-        st.write("Detected signals:")
-        signal_tags = [k for k, v in result["flags"].items() if isinstance(v, bool) and v]
-        if signal_tags:
-            st.markdown(" ".join([f"<span class='chip'>{s}</span>" for s in signal_tags]), unsafe_allow_html=True)
-        else:
-            st.caption("系统暂未识别到足够明确的业务信号。建议补充客户的品类、销售渠道、月订单/GMV、预算、供应链需求或推广目标后再判断。")
-
-    st.subheader("Human Final Review 人工最终确认")
-    st.caption("如果选择 Partially agree 或 Disagree，请同时确认 Human Final Route。最终导出的路线以 Human Final Route 为准。")
-    c1, c2 = st.columns(2)
-    with c1:
-        agree = st.radio("你是否同意系统推荐？", ["Agree", "Partially agree", "Disagree"], horizontal=True, key="agree_radio")
-    route_options = ["Use system recommendation", "Sourcing Support", "MyyBiz Store", "MyyBiz CPC", "MyyBiz CPL", "MyyBiz CPS / Affiliate", "Co-Creation", "Myyshop / KOL-KOC Seeding / UGC Exposure", "Nurture / Self-service", "Compliance Review", "Reject / Red Line"]
-    with c2:
-        final_route = st.selectbox(
-            "Human Final Route 最终跟进路线",
-            route_options,
-            key="final_route",
-        )
-    if agree == "Partially agree" and final_route == "Use system recommendation":
-        st.warning("你选择了部分同意。请确认是否需要调整最终路线；如果不调整，导出会继续使用系统推荐路线。")
-    if agree == "Disagree" and final_route == "Use system recommendation":
-        st.error("你已选择不同意系统推荐，请重新选择 Human Final Route，否则导出记录会前后矛盾。")
-    human_reason = st.text_area("Override reason / notes 调整原因", placeholder="例：系统推荐 CPS，但佣金和毛利还没确认，所以先走 Sourcing Support。", key="human_reason")
-
-    note = crm_note(result["profile"], result["route"], result["priority"], result["confidence"], result["internal"], result["client_msg"], result["missing"], final_route, human_reason)
-    st.subheader("Copy-ready CRM Note")
-    st.text_area("Copy this into CRM / Slack / follow-up doc", value=note, height=360)
-
-    export_row = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "evaluator": evaluator,
-        "client_code": client_code,
-        "system_route": result["route"],
-        "human_final_route": final_route,
-        "agree": agree,
-        "priority": result["priority"],
-        "confidence": result["confidence"],
-        "evidence": result["evidence"],
-        "adjusted_score": result["scores"]["Adjusted"],
-        "client_type": result["profile"]["Client Type"],
-        "business_stage": result["profile"]["Business Stage"],
-        "main_pain_point": result["profile"]["Main Pain Point"],
-        "missing_info": "; ".join(result["missing"]),
-        "human_reason": human_reason,
-        "crm_note": note,
-    }
-    export_df = pd.DataFrame([export_row])
-    if agree == "Disagree" and final_route == "Use system recommendation":
-        st.button("Download Result CSV", disabled=True, help="请先选择新的 Human Final Route。")
-    else:
-        st.download_button(
-            "Download Result CSV",
-            export_df.to_csv(index=False).encode("utf-8-sig"),
-            file_name="client_profile_result_v10.csv",
-            mime="text/csv",
-        )
-
-# -----------------------------
-# Sidebar / navigation
-# -----------------------------
-st.sidebar.title("🧭 Start Here")
-st.sidebar.info("有访谈/聊天记录用 1；没有完整记录、只想快速判断用 2；3 是新员工练习；4 是查标准和致谢，不是日常主流程。")
-mode = st.sidebar.radio(
-    "你现在想做什么？",
-    ["1｜Analyze Interview", "2｜Quick Assessment", "3｜Training Sample", "4｜Benchmark / Credits"],
+entry = st.radio(
+    "请选择你现在要做什么：",
+    ["1｜Analyze Interview：我有访谈/聊天记录", "2｜Quick Assessment：我没有完整记录，只想快速判断", "3｜Benchmark：查看评分口径"],
+    horizontal=True,
 )
 
-st.sidebar.markdown("---")
-st.sidebar.caption("V10 focuses on clearer scope, transparent scoring, compliance help, and safer human review.")
+COMPLIANCE_HELP = "Auto=系统自动判断；Green=常规可推进；Gray=需审批且默认只走CPL；Red=红线，不能进入付款/广告/sourcing流程。"
 
-st.title("Client Profile & Route Recommender V10")
-st.caption("自然访谈输入 → 自动生成客户画像 → 推荐路线 → 内部动作 → 客户 follow-up → 人工最终确认。")
-st.info("入口说明：① 有客户访谈/聊天记录时用 Analyze Interview；② 没有完整记录时用 Quick Assessment；③ Training Sample 只用于练习；④ Benchmark / Credits 用于查标准和项目致谢。")
 
-# Shared metadata
-with st.expander("Case Info（可选，用于导出和团队收集）", expanded=False):
-    col_a, col_b, col_c = st.columns(3)
-    evaluator = col_a.text_input("Evaluator Name", placeholder="Kevin / Frank / Jack / Ouna")
-    client_code = col_b.text_input("Client Code", placeholder="20260706-001，不建议放真实全名")
-    source_channel = col_c.selectbox("Source Channel", ["Unknown", "Interview", "WhatsApp", "Event", "Referral", "DHgate Buyer", "Email", "Other"])
+def render_analysis(text: str, client_code: str = "", source_label: str = "正式评估"):
+    if not text.strip():
+        st.warning("请先输入客户访谈内容或快速评估信息。")
+        return
 
-if mode == "1｜Analyze Interview":
-    st.header("1｜Analyze Interview / Call Notes")
-    st.write("把 interview transcript、call notes 或 WhatsApp 聊天记录粘进来。员工不需要先理解评分，先看客户画像和下一步动作。")
-    st.info("适用范围：本工具主要适用于电商卖家、品牌方、分销商、创作者/KOL/KOC、独立站或平台卖家等客户画像分析。如果访谈内容与商品、销售渠道、流量、GMV、供应链、分销、达人推广等无关，系统结果可能不适合直接使用。")
-    manual = st.selectbox("Compliance Override（可选）", ["Auto", "Green / normal", "Gray / needs approval", "Red / not allowed"], help="默认建议使用 Auto；只有当你确认系统误判，或你掌握额外合规信息时，才需要手动调整。")
-    with st.expander("Compliance Override 选项说明", expanded=False):
-        st.write("- Auto：使用系统自动判断；没有额外信息时建议保持 Auto。")
-        st.write("- Green / normal：常规可推进品类，没有明显红线或审批风险。")
-        st.write("- Gray / needs approval：有一定风险，需先内部确认或审批后再推进。")
-        st.write("- Red / not allowed：红线品类，不进入付款、广告或 sourcing 流程。")
-    text = st.text_area("Paste Interview / Call Notes", height=300, placeholder="Paste interview notes here...")
-    if st.button("Generate Client Profile", type="primary"):
-        if not text.strip():
-            st.warning("请先粘贴 interview / call notes。")
+    if not has_any(text, CONFIG["keywords"]["ecommerce"]):
+        st.warning("系统没有识别到明显的电商/分销业务信号，本次分析置信度较低。请确认该客户是否属于电商卖家、品牌方、创作者或分销相关客户；如果不是，请不要直接使用系统生成的话术。")
+
+    compliance_override = st.session_state.get("compliance_override", "Auto")
+    compliance, compliance_reason = detect_compliance(text, compliance_override)
+    scores, score_reasons, axes = calculate_scores(text)
+    evidence, evidence_reason = evidence_confidence(text, scores)
+    service = determine_service_combo(text, axes, evidence, compliance, scores)
+    marketing_subtypes, marketing_reasons = determine_marketing_subtypes(text, compliance, scores)
+    value_tier, rhythm, value_reason = determine_value_and_priority(scores, axes, service, evidence)
+    profile = make_client_profile(text, scores, axes, service, marketing_subtypes, compliance, evidence)
+    reason = build_reason(compliance_reason, service["reason"], value_reason, evidence_reason)
+    pains = detect_pain_points(text)
+    signals = detect_signals(text)
+    needed, not_app = missing_info(text, axes, service, marketing_subtypes)
+    actions = next_actions_by_pain(text, service, marketing_subtypes)
+    tasks = build_am_checklist(service, marketing_subtypes)
+
+    st.subheader("客户画像 Client Profile")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("客户类型", profile["客户类型"])
+    c2.metric("合规档", compliance)
+    c3.metric("价值档", value_tier)
+    c4.metric("节奏", rhythm)
+
+    st.markdown("#### 三轴独立就绪度")
+    a1, a2, a3 = st.columns(3)
+    a1.metric("Sourcing轴", f"{axes['Sourcing']['status']}", f"{axes['Sourcing']['score']}/{axes['Sourcing']['max']}")
+    a2.metric("Marketing轴", f"{axes['Marketing']['status']}", f"{axes['Marketing']['score']}/{axes['Marketing']['max']}")
+    a3.metric("建站自助轴", f"{axes['Build']['status']}", f"{axes['Build']['score']}/{axes['Build']['max']}")
+
+    if evidence == "低" and any(a["status"] == "Ready" for a in axes.values()):
+        st.warning("存在高就绪但低置信的情况：请先补齐Missing Info后重跑，不要直接降级为Nurture。")
+
+    st.markdown("#### 服务组合建议")
+    st.success(f"服务组合：{profile['服务组合']}")
+    st.write(f"**主方案：** {service['main']}")
+    st.write(f"**辅助方案：** {service['aux']}")
+    st.write(f"**营销子类型：** {profile['营销子类型']}")
+    if marketing_reasons:
+        st.caption("营销判断依据：" + "；".join(marketing_reasons))
+
+    st.markdown("#### Human Final Review 前的归因说明")
+    st.info(reason)
+
+    with st.expander("查看Detected signals和评分依据", expanded=False):
+        st.write("**Detected signals（只显示访谈中真实命中的信号）：**")
+        st.write("、".join(signals) if signals else "暂未识别到足够明确的业务信号。")
+        st.write("**分项评分：**")
+        for key, score in scores.items():
+            label = key
+            st.write(f"- {label}: {score}｜{score_reasons[key]}")
+        st.caption("Ready/待补证据/Not Ready按CONFIG中的每轴阈值判断；证据置信度与就绪度分开处理。")
+
+    st.markdown("---")
+    st.subheader("What should we do next?")
+    st.caption("按客户pain point分别给内部动作和对客户说的动作。")
+    for row in actions:
+        with st.container(border=True):
+            st.markdown(f"**Pain Point：{row['Pain Point']}**")
+            col_i, col_c = st.columns(2)
+            col_i.markdown("**内部动作**")
+            col_i.write(row["内部动作"])
+            col_c.markdown("**对客户说的动作**")
+            col_c.write(row["对客户说的动作"])
+
+    st.markdown("---")
+    st.subheader("Missing Info 动态补问")
+    m1, m2 = st.columns(2)
+    with m1:
+        st.markdown("**需补问**")
+        if needed:
+            for item in needed:
+                st.write(f"- {item}")
         else:
-            result = analyze_text(text, manual)
-            render_results(result, evaluator, client_code)
+            st.write("当前路线下没有明显必补项。")
+    with m2:
+        st.markdown("**对该客户暂不适用**")
+        if not_app:
+            for item in not_app:
+                st.write(f"- {item}")
+        else:
+            st.write("暂无。")
 
-elif mode == "2｜Quick Assessment":
-    st.header("2｜Quick Assessment / 2分钟快速评估")
-    st.write("没有 transcript 的时候，用简单问题快速生成 profile。员工不需要看权重，只回答事实。")
+    with st.expander("根据需补问生成的closing questions", expanded=True):
+        if needed:
+            for item in needed[:6]:
+                st.write(f"- 为了帮你匹配更准确的资源，可以再确认一下：{item}吗？")
+        else:
+            st.write("信息基本够用，可以进入下一步人工确认。")
+
+    st.markdown("---")
+    st.subheader("AM跟进Checklist")
+    st.caption("根据命中的服务动态生成，AM可更新阶段状态。")
+    status_options = ["待跟进", "进行中", "已完成"]
+    checklist_status = []
+    for idx, task in enumerate(tasks):
+        cols = st.columns([1.2, 1.2, 4, 1.2])
+        cols[0].write(task["服务"])
+        cols[1].write(task["阶段"])
+        cols[2].write(task["任务"])
+        status = cols[3].selectbox("状态", status_options, index=status_options.index(task["状态"]), key=f"task_status_{source_label}_{idx}", label_visibility="collapsed")
+        checklist_status.append(f"{task['服务']}-{task['阶段']}:{status}")
+    checklist_summary = "；".join(checklist_status)
+
+    st.markdown("---")
+    st.subheader("人工确认 / Override")
+    agree = st.radio("你是否同意系统建议？", ["Agree", "Partially agree", "Disagree"], horizontal=True, key=f"agree_{source_label}")
+    default_services = service["combo"]
+    all_services = ["Sourcing", "建站自助", "营销", "精准补齐货源稳定性", "精准补齐营销", "精准补齐建站/素材", "补证据后重跑", "Nurture", "合规否决"]
+    if agree == "Disagree":
+        st.warning("你已选择不同意系统推荐，请重新选择最终服务组合，并填写原因。")
+        default_final = []
+    elif agree == "Partially agree":
+        st.warning("你选择部分同意，请确认最终服务组合是否需要调整。导出以Human Final Route为准。")
+        default_final = [s for s in default_services if s in all_services]
+    else:
+        default_final = [s for s in default_services if s in all_services]
+
+    final_combo = st.multiselect("Human Final Route / 最终服务组合", all_services, default=default_final, key=f"final_combo_{source_label}")
+    override_reason = st.text_area("人工调整原因（如无调整可写：同意系统建议）", value="同意系统建议" if agree == "Agree" else "", key=f"override_reason_{source_label}")
+    export_status = "已确认" if agree == "Agree" else "人工调整"
+
+    if agree == "Disagree" and not final_combo:
+        st.error("选择Disagree后必须重新选择Human Final Route，否则不能导出。")
+        can_export = False
+    else:
+        can_export = True
+
+    st.markdown("#### CRM Note 可复制摘要")
+    crm_note = (
+        f"客户类型：{profile['客户类型']}。主要痛点：{profile['主要痛点']}。"
+        f"三轴就绪度：Sourcing={axes['Sourcing']['status']}，营销={axes['Marketing']['status']}，建站={axes['Build']['status']}。"
+        f"建议服务组合：{profile['服务组合']}；主方案：{service['main']}；营销子类型：{profile['营销子类型']}。"
+        f"证据置信度：{evidence}。需补问：{'、'.join(needed) if needed else '暂无明显必补项'}。"
+        f"人工确认：{agree}；最终路线：{'、'.join(final_combo) if final_combo else '未确认'}。"
+    )
+    st.text_area("CRM Note", value=crm_note, height=140)
+
+    final_service_for_export = service.copy()
+    if final_combo:
+        final_service_for_export["combo"] = final_combo
+        final_service_for_export["main"] = " + ".join(final_combo)
+    export_row = build_export_row(
+        client_code=client_code,
+        profile=profile,
+        pain_points=pains,
+        service=final_service_for_export,
+        marketing_subtypes=marketing_subtypes,
+        compliance=compliance,
+        value_tier=value_tier,
+        rhythm=rhythm,
+        evidence=evidence,
+        reason=reason + (f" 人工说明：{override_reason}" if override_reason else ""),
+        checklist_summary=checklist_summary,
+        status=export_status,
+    )
+
+    if can_export:
+        st.download_button(
+            "下载CSV（可导入Lark多维表格）",
+            data=csv_bytes(export_row),
+            file_name=f"client_route_{client_code or datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+        )
+    else:
+        st.button("下载CSV（需先完成Human Final Route）", disabled=True)
+
+
+if entry.startswith("1"):
+    st.header("1｜Analyze Interview")
+    st.caption("已经有客户访谈、聊天记录或会议纪要时使用。系统会生成客户画像、三轴就绪度、服务组合、内部动作、客户follow-up和AM checklist。")
+    client_code = st.text_input("客户编号", placeholder="例如：20260706-001")
+    st.selectbox("Compliance Override", ["Auto", "Green normal", "Gray needs approval", "Red not allowed"], key="compliance_override", help=COMPLIANCE_HELP)
+    st.caption("默认建议使用Auto；只有当你确认系统误判，或你掌握额外合规信息时，才需要手动调整。")
+    text = st.text_area("粘贴客户访谈内容 / call notes / WhatsApp记录", height=260, placeholder="请粘贴客户访谈内容。内容越包含品类、销售渠道、GMV、预算、货源、页面基础和营销目标，判断越准确。")
+    if st.button("开始分析", type="primary"):
+        st.session_state["analysis_text"] = text
+        st.session_state["analysis_client_code"] = client_code
+    if st.session_state.get("analysis_text"):
+        render_analysis(st.session_state["analysis_text"], st.session_state.get("analysis_client_code", ""), "analyze")
+
+elif entry.startswith("2"):
+    st.header("2｜Quick Assessment")
+    st.caption("没有完整访谈内容时使用。用几个关键字段拼成结构化记录后进入同一套判断逻辑。")
     with st.form("quick_form"):
-        q_client = st.selectbox("客户大概是哪类？", ["Existing ecommerce seller / brand", "Creator / influencer", "Wholesale / distributor-focused merchant", "Beginner / unknown", "Brand seeking KOL exposure"])
-        q_product = st.text_input("产品/品类", placeholder="home decor, skincare, water bottle...")
-        q_channel = st.multiselect("现在在哪些渠道卖/触达客户？", ["Shopify", "Amazon", "TikTok Shop", "Etsy", "Own website", "Offline", "WhatsApp/Community", "Instagram/TikTok content", "Not selling yet"])
-        q_scale = st.selectbox("生意规模", ["Not confirmed", "No sales yet", "Test orders only", "Monthly GMV $1k-$5k", "Monthly GMV $5k-$20k", "Monthly GMV $20k+"])
-        q_pain = st.multiselect("最大痛点", ["Sourcing", "Traffic / ads", "Creator Affiliate Sales / CPS", "Distributor / reseller leads", "KOL/KOC Seeding / UGC Exposure", "Store setup", "Conversion", "Logistics", "Not clear"], help="Seeding 更偏寄样/内容曝光；Affiliate Sales 更偏按成交分佣。")
-        q_readiness = st.multiselect("已经准备好的东西", ["Product/SKU", "Inventory", "Product photos/videos", "Store link", "Sales screenshot", "Target price/MOQ", "Marketing budget", "Commission range", "Samples for creators", "None"])
-        q_compliance = st.selectbox("合规判断", ["Auto", "Green / normal", "Gray / needs approval", "Red / not allowed"], help="默认用 Auto；只有你掌握额外合规信息时再手动改。")
-        submitted = st.form_submit_button("Generate Quick Profile")
-    if submitted:
-        synthetic = f"""
-        Client type: {q_client}
-        Product category: {q_product}
-        Sales channels: {', '.join(q_channel)}
-        Business scale: {q_scale}
-        Pain points: {', '.join(q_pain)}
-        Readiness: {', '.join(q_readiness)}
-        """
-        result = analyze_text(synthetic, q_compliance)
-        render_results(result, evaluator, client_code)
+        client_code = st.text_input("客户编号", placeholder="例如：20260706-002")
+        client_type = st.selectbox("客户初步类型", ["待确认", "现有卖家", "分销商", "创作者", "工厂B2B", "新手"])
+        product = st.text_input("产品/品类", placeholder="例如：手机壳、家居香薰、服装、OEM包装")
+        sales_channel = st.text_input("当前销售渠道", placeholder="例如：Shopify / TikTok Shop / Amazon / 线下 / 无")
+        business_scale = st.text_input("GMV/订单/粉丝/私域", placeholder="例如：月GMV $8000；粉丝50k ER 3%；或未确认")
+        budget = st.text_input("预算/付费意愿", placeholder="例如：预算$2000；愿意小额测试；只想免费")
+        pain = st.multiselect("主要pain point", ["Sourcing", "Traffic / Ads", "Affiliate / Creator Sales", "Distributor / Reseller", "B2B Leads", "Store Setup", "Conversion", "Logistics", "Content / UGC", "Not clear"])
+        data_foundation = st.multiselect("页面与数据基础", ["站点", "Pixel", "GA4", "表单", "WhatsApp", "归因"])
+        product_features = st.multiselect("产品特征", ["强展示", "强解释", "可寄样", "可标准化", "B2B长决策"])
+        materials = st.text_input("素材情况", placeholder="例如：产品图+视频齐全 / 部分素材 / 几乎没有")
+        st.selectbox("Compliance Override", ["Auto", "Green normal", "Gray needs approval", "Red not allowed"], key="compliance_override", help=COMPLIANCE_HELP)
+        submitted = st.form_submit_button("生成快速评估", type="primary")
 
-elif mode == "3｜Training Sample":
-    st.header("3｜Training Sample / 员工练习模式")
-    st.write("先让员工自己判断路线，再看系统结果。这个模式适合 onboarding 和团队校准。")
-    case_name = st.selectbox("Choose a sample case", list(SAMPLE_CASES.keys()))
-    case = SAMPLE_CASES[case_name]
-    st.markdown(f"**Training Note:** {case['note']}")
-    with st.expander("View Sample Interview", expanded=True):
-        st.text_area("Sample transcript", value=case["text"], height=260)
-    guess = st.selectbox("你觉得这个客户最适合哪条路线？", ["Sourcing Support", "MyyBiz Store", "MyyBiz CPC", "MyyBiz CPL", "MyyBiz CPS / Affiliate", "Co-Creation", "Myyshop / KOL-KOC Seeding / UGC Exposure", "Nurture / Self-service", "Compliance Review", "Reject / Red Line"])
-    if st.button("Show System Analysis", type="primary"):
-        st.info(f"Expected training route: {case['expected']}")
-        result = analyze_text(case["text"], "Auto")
-        render_results(result, evaluator, client_code)
+    if submitted:
+        quick_text = f"客户类型：{client_type}\n产品品类：{product}\n当前销售渠道：{sales_channel}\n业务规模：{business_scale}\n预算付费意愿：{budget}\n主要pain point：{', '.join(pain)}\n页面与数据基础：{', '.join(data_foundation)}\n产品特征：{', '.join(product_features)}\n素材情况：{materials}"
+        st.session_state["quick_text"] = quick_text
+        st.session_state["quick_client_code"] = client_code
+    if st.session_state.get("quick_text"):
+        render_analysis(st.session_state["quick_text"], st.session_state.get("quick_client_code", ""), "quick")
 
 else:
-    st.header("4｜Benchmark / Credits")
-    st.subheader("How employees should use this tool")
-    st.write(
-        """
-        1. 先用 Interview Analyzer 生成客户画像，不要先纠结分数。  
-        2. 看 Recommended Route、Priority、Confidence 和 Client-facing Follow-up。  
-        3. 缺信息时，不要强推 demo 或 sourcing；用 Missing Info 里的问题补齐。  
-        4. 最终路线必须由员工在 Human Final Review 里确认或 override。  
-        5. 导出 CSV 后可以汇总到 Google Sheet，比较 system route 和 human route。
-        """
-    )
-    st.subheader("Simple benchmark rules")
-    benchmark = pd.DataFrame([
-        {"Area": "Sales", "High": "月 GMV ≥ $20k 或订单 ≥300", "Medium": "$1k-$20k 或少量真实订单", "Low": "无销售/无计划"},
-        {"Area": "Traffic", "High": "名单 ≥5k 或社媒 ≥50k 且互动好", "Medium": "名单 300-5k 或社媒 2k-50k", "Low": "无私域且不愿买流量"},
-        {"Area": "Budget", "High": "月预算 ≥$2k 或稳定投放", "Medium": "$200-$2k 小测/接受 CPS", "Low": "只想免费/不分佣"},
-        {"Area": "Sourcing", "High": "目标价/MOQ/图/规格/交期齐", "Medium": "缺 1-2 个参数", "Low": "只有泛品类想法"},
-        {"Area": "Evidence", "High": "截图/订单/后台/店铺链接", "Medium": "口述 + 部分材料", "Low": "只有口述"},
-    ])
-    st.dataframe(benchmark, use_container_width=True, hide_index=True)
-    st.subheader("Acknowledgements")
-    st.markdown(
-        """
-        - **Handbook input:** Special thanks to **Frank** and **Jack** for their input on the DHgate MyyBiz SP Follow-up Handbook.  
-        - **Live Conversation Toolkit input:** Special thanks to **Ouna** for her input on the Live Conversation & Interview Toolkit.
-        """
-    )
+    st.header("3｜Benchmark：评分口径")
+    st.caption("这是培训和复核用，不是日常主流程。")
+    st.subheader("三轴结构")
+    st.write("- Sourcing轴 = 货源稳定性")
+    st.write("- Marketing轴 = 付费营销意愿 + 私域规模 + 原渠道销售表现")
+    st.write("- 建站自助轴 = 建站电商基础 + 电子物料完备度")
+    st.subheader("分项权重")
+    for key, weight in CONFIG["weights"].items():
+        st.write(f"- {key}: {weight}")
+    st.subheader("评分选项")
+    for key, opts in CONFIG["component_options"].items():
+        with st.expander(key):
+            for score, label in opts:
+                st.write(f"{score}｜{label}")
+    st.subheader("营销渠道")
+    for k, v in CONFIG["marketing_subtypes"].items():
+        st.write(f"- {k}：{v}")
+    st.subheader("致谢")
+    st.write("Handbook input：感谢 Frank 和 Jack 对 DHgate MyyBiz SP Follow-up Handbook 的输入。")
+    st.write("Live Conversation Toolkit input：感谢 Ouna 对 Live Conversation & Interview Toolkit 的输入。")
