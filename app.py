@@ -1243,71 +1243,94 @@ def build_am_checklist(service: Dict[str, Any], marketing_subtypes: List[str], b
 
 
 # 每类checklist服务对应"客户需提供的资料"：(资料项, 访谈中已提供的判定关键词)
-CLIENT_PROVIDE_MAP: Dict[str, List[Tuple[str, List[str]]]] = {
+# 每类checklist服务对应"客户需提供的资料"：(中文项, 英文项(用于对客户话术), 已提供判定关键词)
+CLIENT_PROVIDE_MAP: Dict[str, List[Tuple[str, str, List[str]]]] = {
     "Sourcing": [
-        ("品类与参考款（链接/图片/样品）", ["链接", "图片", "reference", "参考", "样品", "sample"]),
-        ("目标采购价与目标零售价", ["采购价", "零售价", "target price", "retail price"]),
-        ("可接受MOQ与首单预算", ["moq", "起订量", "首单预算"]),
-        ("定制需求（logo/包装/规格）或是否现货", ["定制", "custom", "logo", "packaging", "现货"]),
+        ("品类与参考款（链接/图片/样品）", "Reference products — links, photos, or samples of what you want to source", ["链接", "图片", "reference", "参考", "样品", "sample"]),
+        ("目标采购价与目标零售价", "Your target purchase price and target retail price", ["采购价", "零售价", "target price", "retail price"]),
+        ("可接受MOQ与首单预算", "Acceptable MOQ and budget for the first order", ["moq", "起订量", "首单预算"]),
+        ("定制需求（logo/包装/规格）或是否现货", "Customization needs (logo, packaging, specs) — or confirm if ready-stock works for you", ["定制", "custom", "logo", "packaging", "现货"]),
     ],
     "建站自助": [
-        ("产品图与视频素材", ["产品图", "图片", "视频", "video", "素材"]),
-        ("卖点文案与价格表", ["卖点", "价格表", "selling point", "price list"]),
-        ("域名/现有站点与收款账户（Stripe/PayPal）", ["域名", "domain", "stripe", "paypal", "收款", "网站", "website"]),
-        ("库存与发货方式", ["库存", "stock", "发货", "shipping", "物流"]),
+        ("产品图与视频素材", "Product photos and video assets", ["产品图", "图片", "视频", "video", "素材"]),
+        ("卖点文案与价格表", "Key selling points and your price list", ["卖点", "价格表", "selling point", "price list"]),
+        ("域名/现有站点与收款账户（Stripe/PayPal）", "Domain / existing website, and your payment account (Stripe or PayPal)", ["域名", "domain", "stripe", "paypal", "收款", "网站", "website"]),
+        ("库存与发货方式", "Inventory details and how you plan to ship orders", ["库存", "stock", "发货", "shipping", "物流"]),
     ],
     "CPC投放": [
-        ("广告预算与目标（ROAS/CPA）", ["预算", "budget", "roas", "cpa"]),
-        ("Pixel/GA4访问权限", ["pixel", "ga4", "utm", "tracking", "归因"]),
-        ("落地页/商品页链接", ["落地页", "landing page", "product page", "页面链接"]),
+        ("广告预算与目标（ROAS/CPA）", "Monthly ad budget and performance goals (target ROAS or CPA)", ["预算", "budget", "roas", "cpa"]),
+        ("Pixel/GA4访问权限", "Access to your Meta Pixel / GA4 (or we can help set them up)", ["pixel", "ga4", "utm", "tracking", "归因"]),
+        ("落地页/商品页链接", "Landing page or product page links you want to drive traffic to", ["落地页", "landing page", "product page", "页面链接"]),
     ],
     "CPS网红营销": [
-        ("可寄样品（数量与成本）", ["寄样", "样品", "sample"]),
-        ("佣金比例与毛利空间", ["佣金", "commission", "毛利", "margin"]),
-        ("达人内容要求与禁忌", ["内容要求", "brief", "禁忌"]),
+        ("可寄样品（数量与成本）", "Samples available for creators — how many and the unit cost", ["寄样", "样品", "sample"]),
+        ("佣金比例与毛利空间", "Commission rate you can offer and your margin room", ["佣金", "commission", "毛利", "margin"]),
+        ("达人内容要求与禁忌", "Content guidelines and any no-gos for creators", ["内容要求", "brief", "禁忌"]),
     ],
     "CPL分销员": [
-        ("分销佣金与价格体系", ["佣金", "commission", "价格体系", "price tier"]),
-        ("目标分销员画像", ["分销员", "代理", "distributor", "reseller"]),
+        ("分销佣金与价格体系", "Reseller commission structure and pricing tiers", ["佣金", "commission", "价格体系", "price tier"]),
+        ("目标分销员画像", "A quick profile of your ideal resellers or distributors", ["分销员", "代理", "distributor", "reseller"]),
     ],
     "CPL Leads": [
-        ("询盘表单字段与报价模板", ["表单", "lead form", "报价模板", "quote template"]),
-        ("24小时跟单负责人", ["24h", "跟单", "负责人", "follow up"]),
-        ("客单价/LTV或批发MOQ", ["客单价", "aov", "ltv", "moq", "批发"]),
+        ("询盘表单字段与报价模板", "The info you need on your lead form, plus your quotation template", ["表单", "lead form", "报价模板", "quote template"]),
+        ("24小时跟单负责人", "A contact on your side who can follow up on leads within 24 hours", ["24h", "跟单", "负责人", "follow up"]),
+        ("客单价/LTV或批发MOQ", "Average order value / customer LTV, or wholesale MOQ", ["客单价", "aov", "ltv", "moq", "批发"]),
     ],
     "AI社媒矩阵号": [
-        ("3-5个核心卖点与内容方向", ["卖点", "内容方向", "selling point", "content angle"]),
-        ("可持续输出的素材来源", ["素材", "视频", "图片", "ugc"]),
+        ("3-5个核心卖点与内容方向", "3-5 core selling points and the content angles you want to push", ["卖点", "内容方向", "selling point", "content angle"]),
+        ("可持续输出的素材来源", "An ongoing source of content assets (photos, videos, UGC)", ["素材", "视频", "图片", "ugc"]),
     ],
     "营销": [
-        ("营销预算与过往投放数据", ["预算", "budget", "投放", "广告"]),
-        ("私域/粉丝数据（规模与互动率）", ["粉丝", "私域", "followers", "互动率", "er"]),
+        ("营销预算与过往投放数据", "Marketing budget and any past campaign data", ["预算", "budget", "投放", "广告"]),
+        ("私域/粉丝数据（规模与互动率）", "Audience data — follower count, community size, engagement rate", ["粉丝", "私域", "followers", "互动率", "er"]),
     ],
     "营销待定": [
-        ("营销预算与获客目标", ["预算", "budget", "获客", "目标"]),
+        ("营销预算与获客目标", "Marketing budget and your customer-acquisition goals", ["预算", "budget", "获客", "目标"]),
     ],
     "Nurture": [
-        ("品类与产品基础信息", ["品类", "产品", "product"]),
-        ("现有销售渠道与数据", ["渠道", "销售", "gmv", "订单"]),
-        ("预算范围", ["预算", "budget"]),
+        ("品类与产品基础信息", "Product category and basic product info", ["品类", "产品", "product"]),
+        ("现有销售渠道与数据", "Current sales channels and performance data", ["渠道", "销售", "gmv", "订单"]),
+        ("预算范围", "A rough budget range", ["预算", "budget"]),
     ],
 }
+
+# 中文项 → 英文项 查找表（对客户话术用）
+_PROVIDE_ITEM_EN: Dict[str, str] = {cn: en for items in CLIENT_PROVIDE_MAP.values() for cn, en, _ in items}
 
 
 def client_provide_list(tasks: List[Dict[str, str]], text: str) -> Tuple[List[str], List[str]]:
     """根据checklist任务推导客户需提供的资料清单；访谈中已提到的归入"已提供"。
-    返回 (待客户提供, 访谈中已提供)。"""
+    返回 (待客户提供, 访谈中已提供)，均为中文项。"""
     low = _t(text)
     to_provide: List[str] = []
     provided: List[str] = []
     seen = set()
     for t in tasks:
-        for item, kws in CLIENT_PROVIDE_MAP.get(t["服务"], []):
+        for item, _en, kws in CLIENT_PROVIDE_MAP.get(t["服务"], []):
             if item in seen:
                 continue
             seen.add(item)
             (provided if has_any(low, kws) else to_provide).append(item)
     return to_provide, provided
+
+
+def build_client_request_message(to_provide: List[str], focus_axis: Optional[str]) -> str:
+    """生成可直接发给客户的英文索取资料消息：说明目的 + 资料清单 + 不施压的收尾。"""
+    if not to_provide:
+        return ""
+    purpose = {
+        "Sourcing": "so we can start sourcing suppliers and get you accurate quotes",
+        "Build": "so we can get your store built and ready to launch",
+        "Marketing": "so we can get your campaigns ready to go",
+    }.get(focus_axis or "", "so we can keep things moving on our side")
+    bullets = "\n".join(f"{i}. {_PROVIDE_ITEM_EN.get(item, item)}" for i, item in enumerate(to_provide, 1))
+    return (
+        f"Hi! Great speaking with you. To move things forward {purpose}, "
+        f"could you share the following when you get a chance?\n\n"
+        f"{bullets}\n\n"
+        f"No need to wait until everything is ready — feel free to send things over as they come, "
+        f"and we'll get started right away. Thanks!"
+    )
 
 
 def make_client_profile(text: str, scores: Dict[str, int], axes: Dict[str, Dict[str, Any]], service: Dict[str, Any], marketing_subtypes: List[str], compliance: str, evidence: str, client_type: Optional[str] = None, pains: Optional[List[str]] = None) -> Dict[str, str]:
@@ -1564,10 +1587,12 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
         else:
             st.write("暂无。")
 
-    with st.expander("向客户索取资料的话术", expanded=True):
-        if to_provide:
-            for item in to_provide[:6]:
-                st.write(f"- 为了尽快帮您推进，麻烦您这边提供一下：{item}。")
+    with st.expander("✉️ 向客户索取资料的话术（English，可直接复制发送）", expanded=True):
+        _focus_axis = next((b["axis"] for b in board_priority.get("boards", []) if b["priority"].startswith("优先")), None)
+        request_msg = build_client_request_message(to_provide, _focus_axis)
+        if request_msg:
+            st.code(request_msg, language=None)
+            st.caption("右上角一键复制。开头称呼可换成客户名字；清单顺序即优先级。")
         else:
             st.write("资料基本齐全，可以进入下一步人工确认。")
 
