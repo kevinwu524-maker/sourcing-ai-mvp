@@ -1242,6 +1242,74 @@ def build_am_checklist(service: Dict[str, Any], marketing_subtypes: List[str], b
     return tasks
 
 
+# 每类checklist服务对应"客户需提供的资料"：(资料项, 访谈中已提供的判定关键词)
+CLIENT_PROVIDE_MAP: Dict[str, List[Tuple[str, List[str]]]] = {
+    "Sourcing": [
+        ("品类与参考款（链接/图片/样品）", ["链接", "图片", "reference", "参考", "样品", "sample"]),
+        ("目标采购价与目标零售价", ["采购价", "零售价", "target price", "retail price"]),
+        ("可接受MOQ与首单预算", ["moq", "起订量", "首单预算"]),
+        ("定制需求（logo/包装/规格）或是否现货", ["定制", "custom", "logo", "packaging", "现货"]),
+    ],
+    "建站自助": [
+        ("产品图与视频素材", ["产品图", "图片", "视频", "video", "素材"]),
+        ("卖点文案与价格表", ["卖点", "价格表", "selling point", "price list"]),
+        ("域名/现有站点与收款账户（Stripe/PayPal）", ["域名", "domain", "stripe", "paypal", "收款", "网站", "website"]),
+        ("库存与发货方式", ["库存", "stock", "发货", "shipping", "物流"]),
+    ],
+    "CPC投放": [
+        ("广告预算与目标（ROAS/CPA）", ["预算", "budget", "roas", "cpa"]),
+        ("Pixel/GA4访问权限", ["pixel", "ga4", "utm", "tracking", "归因"]),
+        ("落地页/商品页链接", ["落地页", "landing page", "product page", "页面链接"]),
+    ],
+    "CPS网红营销": [
+        ("可寄样品（数量与成本）", ["寄样", "样品", "sample"]),
+        ("佣金比例与毛利空间", ["佣金", "commission", "毛利", "margin"]),
+        ("达人内容要求与禁忌", ["内容要求", "brief", "禁忌"]),
+    ],
+    "CPL分销员": [
+        ("分销佣金与价格体系", ["佣金", "commission", "价格体系", "price tier"]),
+        ("目标分销员画像", ["分销员", "代理", "distributor", "reseller"]),
+    ],
+    "CPL Leads": [
+        ("询盘表单字段与报价模板", ["表单", "lead form", "报价模板", "quote template"]),
+        ("24小时跟单负责人", ["24h", "跟单", "负责人", "follow up"]),
+        ("客单价/LTV或批发MOQ", ["客单价", "aov", "ltv", "moq", "批发"]),
+    ],
+    "AI社媒矩阵号": [
+        ("3-5个核心卖点与内容方向", ["卖点", "内容方向", "selling point", "content angle"]),
+        ("可持续输出的素材来源", ["素材", "视频", "图片", "ugc"]),
+    ],
+    "营销": [
+        ("营销预算与过往投放数据", ["预算", "budget", "投放", "广告"]),
+        ("私域/粉丝数据（规模与互动率）", ["粉丝", "私域", "followers", "互动率", "er"]),
+    ],
+    "营销待定": [
+        ("营销预算与获客目标", ["预算", "budget", "获客", "目标"]),
+    ],
+    "Nurture": [
+        ("品类与产品基础信息", ["品类", "产品", "product"]),
+        ("现有销售渠道与数据", ["渠道", "销售", "gmv", "订单"]),
+        ("预算范围", ["预算", "budget"]),
+    ],
+}
+
+
+def client_provide_list(tasks: List[Dict[str, str]], text: str) -> Tuple[List[str], List[str]]:
+    """根据checklist任务推导客户需提供的资料清单；访谈中已提到的归入"已提供"。
+    返回 (待客户提供, 访谈中已提供)。"""
+    low = _t(text)
+    to_provide: List[str] = []
+    provided: List[str] = []
+    seen = set()
+    for t in tasks:
+        for item, kws in CLIENT_PROVIDE_MAP.get(t["服务"], []):
+            if item in seen:
+                continue
+            seen.add(item)
+            (provided if has_any(low, kws) else to_provide).append(item)
+    return to_provide, provided
+
+
 def make_client_profile(text: str, scores: Dict[str, int], axes: Dict[str, Dict[str, Any]], service: Dict[str, Any], marketing_subtypes: List[str], compliance: str, evidence: str, client_type: Optional[str] = None, pains: Optional[List[str]] = None) -> Dict[str, str]:
     page_data = detect_page_data_foundation(text)
     features = detect_product_features(text)
@@ -1477,29 +1545,31 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
                 col_c.write(row["对客户说的动作"])
 
     st.markdown("---")
-    st.subheader("Missing Info 动态补问")
+    st.subheader("📥 待客户提供")
+    st.caption("根据上方Checklist自动生成：推进对应任务需要客户交付的资料；访谈中已提到的自动归入右侧。")
+    to_provide, already_provided = client_provide_list(tasks, text)
     m1, m2 = st.columns(2)
     with m1:
-        st.markdown("**需补问**")
-        if needed:
-            for item in needed:
+        st.markdown("**需要客户提供**")
+        if to_provide:
+            for item in to_provide:
                 st.write(f"- {item}")
         else:
-            st.write("当前路线下没有明显必补项。")
+            st.write("当前Checklist下无需向客户索取资料。")
     with m2:
-        st.markdown("**对该客户暂不适用**")
-        if not_app:
-            for item in not_app:
+        st.markdown("**访谈中已提供/已提及**")
+        if already_provided:
+            for item in already_provided:
                 st.write(f"- {item}")
         else:
             st.write("暂无。")
 
-    with st.expander("根据需补问生成的closing questions", expanded=True):
-        if needed:
-            for item in needed[:6]:
-                st.write(f"- 为了帮你匹配更准确的资源，可以再确认一下：{item}吗？")
+    with st.expander("向客户索取资料的话术", expanded=True):
+        if to_provide:
+            for item in to_provide[:6]:
+                st.write(f"- 为了尽快帮您推进，麻烦您这边提供一下：{item}。")
         else:
-            st.write("信息基本够用，可以进入下一步人工确认。")
+            st.write("资料基本齐全，可以进入下一步人工确认。")
 
     st.markdown("---")
     st.subheader("人工确认 / Override")
@@ -1531,7 +1601,7 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
         f"三轴就绪度：Sourcing={axes['Sourcing']['status']}，营销={axes['Marketing']['status']}，建站={axes['Build']['status']}。"
         f"下一步板块：{board_priority['headline']}。"
         f"可选营销途径：{profile['营销子类型']}；推进方案：{service['main']}。"
-        f"证据置信度：{evidence}。需补问：{'、'.join(needed) if needed else '暂无明显必补项'}。"
+        f"证据置信度：{evidence}。待客户提供：{'、'.join(to_provide) if to_provide else '资料基本齐全'}。"
         f"人工确认：{agree}；最终路线：{'、'.join(final_combo) if final_combo else '未确认'}。"
     )
     st.text_area("CRM Note", value=crm_note, height=140)
