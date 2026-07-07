@@ -918,6 +918,87 @@ def determine_value_and_priority(scores: Dict[str, int], axes: Dict[str, Dict[st
         return "中", "待培育", "客户有一定意向但证据不足，先补证据后再确认节奏。"
     return "中", service.get("rhythm", "快转化"), "客户具备一定服务价值，可按当前主方案推进。"
 
+
+def determine_board_priority(axes: Dict[str, Dict[str, Any]], scores: Dict[str, int], compliance: str) -> Dict[str, Any]:
+    """根据三轴grading排出三个板块（Sourcing/建站/营销）的下一步优先级。
+    依赖链：Sourcing（有货）→ 建站（能上架）→ 营销（有流量）。链条上第一个未就绪的板块=本步优先，
+    其上游已就绪、其下游暂缓（即便下游自身条件够，也要等上游打通，否则投入空转）。
+    返回 {"headline": ..., "boards": [ {板块, grading, priority, reason, action}, ... ]}。"""
+    if compliance == "红线":
+        return {
+            "headline": "合规否决：不进入 sourcing / 建站 / 营销任一板块，先停止推进。",
+            "boards": [],
+        }
+
+    # 依赖链顺序（上游在前）
+    chain = [
+        ("Sourcing", "① Sourcing / 货源"),
+        ("Build", "② 建站 / 上架"),
+        ("Marketing", "③ 营销 / 获客"),
+    ]
+    paid = scores.get("paid_marketing_willingness", 0)
+
+    # 每个板块在“非就绪”时的第一步动作
+    def first_action(axis_key: str, status: str) -> str:
+        if axis_key == "Sourcing":
+            if status == "待补证据":
+                return "补齐货源证据：现有供应商截图/报价单/合作关系，确认稳定性后重跑。"
+            return "先确认品类可行性与供应商：目标采购价、MOQ、是否可做，锁定2-3个候选供应商。"
+        if axis_key == "Build":
+            if status == "待补证据":
+                return "补齐建站素材证据：现有站点链接、产品图/视频清单、收款方式。"
+            return "把最小可上线店铺跑通：产品图/视频/卖点/价格/收款，完成上架与下单路径。"
+        # Marketing
+        if status == "待补证据":
+            return "补齐营销证据：预算金额、投放经验、私域规模/互动率。"
+        if paid == 0:
+            return "客户付费意愿为0，营销封顶L2自助：先不投付费获客，引导内容/私域自助起量。"
+        return "先补营销就绪条件：确认预算、页面追踪(Pixel/GA4)、素材，再决定CPC/CPS/CPL。"
+
+    ready_action = {
+        "Sourcing": "货源已稳定，无需重点投入，可支撑后续板块。",
+        "Build": "建站/素材基础具备，可支撑上架与投放落地页。",
+        "Marketing": "营销条件具备，可进入投放/达人/分销测试。",
+    }
+
+    statuses = {k: axes[k]["status"] for k, _ in chain}
+    # 链条上第一个未就绪（Not Ready 或 待补证据）的板块索引
+    focus_idx = next((i for i, (k, _) in enumerate(chain) if statuses[k] != "Ready"), None)
+
+    boards: List[Dict[str, str]] = []
+    for i, (axis_key, label) in enumerate(chain):
+        st_ = statuses[axis_key]
+        grading = f"{st_}（{axes[axis_key]['score']}/{axes[axis_key]['max']}）"
+        if focus_idx is None:
+            # 三轴全就绪
+            priority = "已就绪"
+            reason = "该板块已就绪。"
+            action = ready_action[axis_key]
+        elif i < focus_idx:
+            priority = "已就绪"
+            reason = "上游板块已打通，可并行维护。"
+            action = ready_action[axis_key]
+        elif i == focus_idx:
+            priority = "优先（本步先做）"
+            reason = "依赖链上第一个未就绪的板块，是当前最该补的短板。"
+            action = first_action(axis_key, st_)
+        else:
+            priority = "暂缓（等上游）"
+            upstream_blocked = [lbl for j, (k, lbl) in enumerate(chain) if j < i and statuses[k] != "Ready"]
+            if st_ == "Ready":
+                reason = f"本板块条件其实已具备，但需先完成上游（{'、'.join(upstream_blocked)}），否则投入会空转。"
+            else:
+                reason = f"需先完成上游（{'、'.join(upstream_blocked)}）再回到本板块。"
+            action = first_action(axis_key, st_) if st_ != "Ready" else ready_action[axis_key]
+        boards.append({"board": label, "grading": grading, "priority": priority, "reason": reason, "action": action})
+
+    if focus_idx is None:
+        headline = "三轴均已就绪：按 Sourcing → 建站 → 营销 里程碑分阶段推进。"
+    else:
+        focus_label = chain[focus_idx][1]
+        headline = f"下一步优先：{focus_label}（{statuses[chain[focus_idx][0]]}）"
+    return {"headline": headline, "boards": boards}
+
 # ============================================================
 # 动作、Missing Info、AM Checklist
 # ============================================================
@@ -1239,6 +1320,7 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
     service = determine_service_combo(text, axes, evidence, compliance, scores)
     marketing_subtypes, marketing_reasons = determine_marketing_subtypes(text, compliance, scores, pains=pains)
     value_tier, rhythm, value_reason = determine_value_and_priority(scores, axes, service, evidence)
+    board_priority = determine_board_priority(axes, scores, compliance)
     signals = detect_signals(text)
     needed, not_app = missing_info(text, axes, service, marketing_subtypes)
     actions = next_actions_by_pain(text, service, marketing_subtypes, pains=pains)
@@ -1276,6 +1358,22 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
 
     if evidence == "低" and any(a["status"] == "Ready" for a in axes.values()):
         st.warning("存在高就绪但低置信的情况：请先补齐Missing Info后重跑，不要直接降级为Nurture。")
+
+    st.markdown("#### 下一步板块优先级（Sourcing / 建站 / 营销）")
+    st.caption("依赖链：Sourcing（有货）→ 建站（能上架）→ 营销（有流量）。根据三轴grading判断先做哪个，下游即使条件够也要等上游打通。")
+    if board_priority["boards"]:
+        st.success(f"👉 {board_priority['headline']}")
+        prio_icon = {"优先（本步先做）": "🔴", "次之": "🟡", "暂缓（等上游）": "⚪", "已就绪": "🟢"}
+        for b in board_priority["boards"]:
+            with st.container(border=True):
+                cols = st.columns([2.2, 1.6, 1.4])
+                cols[0].markdown(f"**{b['board']}**")
+                cols[1].write(b["grading"])
+                cols[2].markdown(f"{prio_icon.get(b['priority'], '')} {b['priority']}")
+                st.write(f"**第一步动作：** {b['action']}")
+                st.caption(b["reason"])
+    else:
+        st.error(f"⛔ {board_priority['headline']}")
 
     st.markdown("#### 服务组合建议")
     st.success(f"服务组合：{profile['服务组合']}")
@@ -1380,6 +1478,7 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
     crm_note = (
         f"客户类型：{profile['客户类型']}。主要痛点：{profile['主要痛点']}。"
         f"三轴就绪度：Sourcing={axes['Sourcing']['status']}，营销={axes['Marketing']['status']}，建站={axes['Build']['status']}。"
+        f"下一步板块：{board_priority['headline']}。"
         f"建议服务组合：{profile['服务组合']}；主方案：{service['main']}；营销子类型：{profile['营销子类型']}。"
         f"证据置信度：{evidence}。需补问：{'、'.join(needed) if needed else '暂无明显必补项'}。"
         f"人工确认：{agree}；最终路线：{'、'.join(final_combo) if final_combo else '未确认'}。"
