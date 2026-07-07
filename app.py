@@ -996,7 +996,7 @@ def determine_board_priority(axes: Dict[str, Dict[str, Any]], scores: Dict[str, 
             else:
                 reason = f"需先完成上游（{'、'.join(upstream_blocked)}）再回到本板块。"
                 action = first_action(axis_key, st_)
-        boards.append({"axis": axis_key, "board": label, "grading": grading, "priority": priority, "reason": reason, "action": action})
+        boards.append({"axis": axis_key, "board": label, "status": st_, "grading": grading, "priority": priority, "reason": reason, "action": action})
 
     if focus_idx is None:
         headline = "三轴均已就绪：按 Sourcing → 建站 → 营销 里程碑分阶段推进"
@@ -1172,7 +1172,7 @@ def next_actions_by_pain(text: str, service: Dict[str, Any], marketing_subtypes:
     return rows
 
 
-def build_am_checklist(service: Dict[str, Any], marketing_subtypes: List[str], board_priority: Optional[Dict[str, Any]] = None) -> List[Dict[str, str]]:
+def build_am_checklist(service: Dict[str, Any], marketing_subtypes: List[str], board_priority: Optional[Dict[str, Any]] = None, needed: Optional[List[str]] = None) -> List[Dict[str, str]]:
     combo = service.get("combo", [])
     tasks: List[Dict[str, str]] = []
     if any("Sourcing" in c or "货源" in c for c in combo):
@@ -1203,8 +1203,8 @@ def build_am_checklist(service: Dict[str, Any], marketing_subtypes: List[str], b
                 tasks.append({"服务": subtype, "阶段": "投放检查", "任务": "确认页面、Pixel/GA4/UTM、预算和素材", "状态": "待跟进"})
             else:
                 tasks.append({"服务": "营销", "阶段": "渠道确认", "任务": "确认适合AI矩阵号/CPS/CPL/CPC中的哪一种", "状态": "待跟进"})
-    # 与"下一步板块优先级"对齐：优先板块必须有可跟进的任务，且checklist按依赖链排序，
-    # 避免横幅说"优先做Sourcing"而checklist里却没有任何Sourcing任务。
+    # 与"下一步板块优先级"对齐：优先板块必须有可跟进的任务，且checklist按"优先板块在前、
+    # 其余按依赖链"排序，避免横幅说"优先做建站"而checklist却把别的板块排在前面。
     if board_priority and board_priority.get("boards"):
         axis_service = {"Sourcing": "Sourcing", "Build": "建站自助", "Marketing": "营销"}
         marketing_services = {"营销", "营销待定", "AI社媒矩阵号", "CPS网红营销", "CPL分销员", "CPL Leads", "CPC投放"}
@@ -1218,11 +1218,24 @@ def build_am_checklist(service: Dict[str, Any], marketing_subtypes: List[str], b
                 return "Marketing"
             return "其他"
 
+        # 轴Ready=客户自身已具备该基础，不需要我们对应的服务任务：
+        # Sourcing Ready（自有货源）→ 不给找货任务；建站Ready（已有店/基础）→ 不给建站任务。
+        # 营销是执行型服务，Ready代表可以开跑，任务保留。
+        ready_lbl = CONFIG["readiness_labels"]["ready"]
+        client_has = {b["axis"] for b in board_priority["boards"] if b["axis"] in ("Sourcing", "Build") and b.get("status") == ready_lbl}
+        tasks = [t for t in tasks if task_axis(t) not in client_has]
+
         focus = next((b for b in board_priority["boards"] if b["priority"].startswith("优先")), None)
         if focus and all(task_axis(t) != focus["axis"] for t in tasks):
             tasks.insert(0, {"服务": axis_service[focus["axis"]], "阶段": "板块优先", "任务": focus["action"], "状态": "待跟进"})
+        # 营销为优先板块时，按"能做什么(可选途径)+需要客户准备什么"补一条准备任务
+        if focus and focus["axis"] == "Marketing" and needed:
+            prep = "、".join(needed[:4])
+            if not any(t["阶段"] == "客户准备" for t in tasks):
+                tasks.append({"服务": "营销", "阶段": "客户准备", "任务": f"客户需准备：{prep}", "状态": "待跟进"})
         chain_rank = {"Sourcing": 0, "Build": 1, "Marketing": 2, "其他": 3}
-        tasks.sort(key=lambda t: chain_rank[task_axis(t)])
+        focus_axis = focus["axis"] if focus else None
+        tasks.sort(key=lambda t: (0 if task_axis(t) == focus_axis else 1, chain_rank[task_axis(t)]))
 
     if not tasks:
         tasks.append({"服务": "Nurture", "阶段": "基础信息", "任务": "补齐客户品类、渠道、预算、销售记录和需求", "状态": "待跟进"})
@@ -1357,7 +1370,7 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
     signals = detect_signals(text)
     needed, not_app = missing_info(text, axes, service, marketing_subtypes)
     actions = next_actions_by_pain(text, service, marketing_subtypes, pains=pains)
-    tasks = build_am_checklist(service, marketing_subtypes, board_priority)
+    tasks = build_am_checklist(service, marketing_subtypes, board_priority, needed)
 
     # 红线否决必须贯穿全部输出：价值档、下一步动作、补问项都走否决链路，
     # 不能一边显示"合规否决"一边给出价值档=高和推进客户的话术。
@@ -1408,13 +1421,20 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
     else:
         st.error(f"⛔ {board_priority['headline']}")
 
-    st.markdown("#### 服务组合建议")
-    st.success(f"服务组合：{profile['服务组合']}")
-    st.write(f"**主方案：** {service['main']}")
-    st.write(f"**辅助方案：** {service['aux']}")
-    st.write(f"**营销子类型：** {profile['营销子类型']}")
+    st.markdown("#### 可选营销途径")
+    if compliance == "红线":
+        st.error("合规否决：无可选营销途径。")
+    elif scores.get("paid_marketing_willingness", 0) == 0:
+        st.warning("付费意愿为0，封顶L2自助：暂无付费营销途径，先以内容/私域自助起量。")
+    elif marketing_subtypes:
+        st.success("可选途径：" + "、".join(marketing_subtypes))
+        if compliance == "灰色":
+            st.caption("⚠️ 灰色品类：默认只能走CPL，CPC/CPS需审批通过后再启动。")
+    else:
+        st.info("暂无明确可选途径，需先补齐营销条件。")
     if marketing_reasons:
-        st.caption("营销判断依据：" + "；".join(marketing_reasons))
+        st.caption("判断依据：" + "；".join(marketing_reasons))
+    st.caption(f"推进方案：{service['main']}｜{service['aux']}")
 
     st.markdown("#### Human Final Review 前的归因说明")
     st.info(reason)
@@ -1434,15 +1454,27 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
 
     st.markdown("---")
     st.subheader("What should we do next?")
-    st.caption("按客户pain point分别给内部动作和对客户说的动作。")
-    for row in actions:
-        with st.container(border=True):
-            st.markdown(f"**Pain Point：{row['Pain Point']}**")
-            col_i, col_c = st.columns(2)
-            col_i.markdown("**内部动作**")
-            col_i.write(row["内部动作"])
-            col_c.markdown("**对客户说的动作**")
-            col_c.write(row["对客户说的动作"])
+    st.caption(f"Checklist按板块优先级排序：{board_priority['headline']}")
+    status_options = ["待跟进", "进行中", "已完成"]
+    checklist_status = []
+    for idx, task in enumerate(tasks):
+        cols = st.columns([1.2, 1.2, 4, 1.2])
+        cols[0].write(task["服务"])
+        cols[1].write(task["阶段"])
+        cols[2].write(task["任务"])
+        status = cols[3].selectbox("状态", status_options, index=status_options.index(task["状态"]), key=f"task_status_{source_label}_{idx}", label_visibility="collapsed")
+        checklist_status.append(f"{task['服务']}-{task['阶段']}:{status}")
+    checklist_summary = "；".join(checklist_status)
+
+    with st.expander("按痛点的沟通话术（内部动作 / 对客户说的动作）", expanded=False):
+        for row in actions:
+            with st.container(border=True):
+                st.markdown(f"**Pain Point：{row['Pain Point']}**")
+                col_i, col_c = st.columns(2)
+                col_i.markdown("**内部动作**")
+                col_i.write(row["内部动作"])
+                col_c.markdown("**对客户说的动作**")
+                col_c.write(row["对客户说的动作"])
 
     st.markdown("---")
     st.subheader("Missing Info 动态补问")
@@ -1468,20 +1500,6 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
                 st.write(f"- 为了帮你匹配更准确的资源，可以再确认一下：{item}吗？")
         else:
             st.write("信息基本够用，可以进入下一步人工确认。")
-
-    st.markdown("---")
-    st.subheader("AM跟进Checklist")
-    st.caption("根据命中的服务动态生成，AM可更新阶段状态。")
-    status_options = ["待跟进", "进行中", "已完成"]
-    checklist_status = []
-    for idx, task in enumerate(tasks):
-        cols = st.columns([1.2, 1.2, 4, 1.2])
-        cols[0].write(task["服务"])
-        cols[1].write(task["阶段"])
-        cols[2].write(task["任务"])
-        status = cols[3].selectbox("状态", status_options, index=status_options.index(task["状态"]), key=f"task_status_{source_label}_{idx}", label_visibility="collapsed")
-        checklist_status.append(f"{task['服务']}-{task['阶段']}:{status}")
-    checklist_summary = "；".join(checklist_status)
 
     st.markdown("---")
     st.subheader("人工确认 / Override")
@@ -1512,7 +1530,7 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
         f"客户类型：{profile['客户类型']}。主要痛点：{profile['主要痛点']}。"
         f"三轴就绪度：Sourcing={axes['Sourcing']['status']}，营销={axes['Marketing']['status']}，建站={axes['Build']['status']}。"
         f"下一步板块：{board_priority['headline']}。"
-        f"建议服务组合：{profile['服务组合']}；主方案：{service['main']}；营销子类型：{profile['营销子类型']}。"
+        f"可选营销途径：{profile['营销子类型']}；推进方案：{service['main']}。"
         f"证据置信度：{evidence}。需补问：{'、'.join(needed) if needed else '暂无明显必补项'}。"
         f"人工确认：{agree}；最终路线：{'、'.join(final_combo) if final_combo else '未确认'}。"
     )
