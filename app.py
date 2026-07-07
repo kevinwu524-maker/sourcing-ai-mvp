@@ -94,7 +94,7 @@ CONFIG: Dict[str, Any] = {
             "keywords": [
                 "违禁药", "违禁药品", "毒品", "麻醉品", "麻醉药品", "精神药品", "冰毒", "海洛因", "可卡因",
                 "narcotic", "psychotropic", "cocaine", "heroin", "meth", "methamphetamine",
-                "weapon", "gun", "firearm", "ammo", "弹药", "枪支", "knife", "管制刀具", "武器",
+                "weapon", "gun", "firearm", "ammo", "弹药", "枪支", "knife", "knives", "管制刀具", "武器",
                 "烟草", "电子烟", "电子烟油", "烟油", "烟弹", "雾化器", "一次性电子烟", "尼古丁", "尼古丁盐",
                 "vape", "vapes", "vaping", "vape pen", "e-cigarette", "e-cig", "ecig", "disposable vape", "nicotine",
                 "成人内容", "赌博", "casino", "博彩", "老虎机", "slot machine",
@@ -166,7 +166,8 @@ CONFIG: Dict[str, Any] = {
         "conversion_pain": ["conversion", "转化", "checkout", "页面", "落地页", "详情页", "客单价", "aov", "ltv"],
         "logistics_pain": ["logistics", "fulfillment", "shipping", "物流", "履约", "发货"],
         # 注意：不要放裸词 "tiktok"，会被 "tiktok shop"（销售渠道）子串命中，导致内容平台/销售渠道误判。
-        "content_pain": ["content", "ugc", "素材", "视频", "拍摄", "社媒", "instagram", "youtube", "抖音", "小红书"],
+        # 用"tiktok账号/涨粉"等内容运营语境词覆盖TikTok内容需求。
+        "content_pain": ["content", "ugc", "素材", "视频", "拍摄", "社媒", "instagram", "youtube", "抖音", "小红书", "tiktok账号", "涨粉", "账号运营", "短视频", "做内容"],
     },
 }
 
@@ -178,26 +179,28 @@ def _t(text: str) -> str:
     return (text or "").lower()
 
 
-def has_any(text: str, keywords: List[str]) -> bool:
-    """纯ASCII字母数字的短关键词（如 wa/gmv）用边界正则匹配，避免命中 want/software 等误触发；
+def _kw_hit(low: str, kw: str) -> bool:
+    """单关键词命中判断，has_any/matched_keywords共用，保证两者语义一致。
+    纯ASCII字母数字的短关键词（如 wa/gmv）用边界正则匹配，避免命中 want/software 等误触发；
+    长度≥3的ASCII词容忍英文复数后缀（gun→guns、weapon→weapons），否则合规红线词的复数形式会漏检。
     中文关键词及包含空格/标点的英文短语按子串匹配即可。
     注意：不用Python原生\\b——Python的\\b把中文字符当作\\w，导致"whatsapp群"这种中英文
     紧贴的情况反而匹配不到，所以这里手写只把ASCII字母数字当"词字符"的边界判断。"""
+    if re.fullmatch(r"[a-z0-9]+", kw):
+        suffix = r"(?:es|s)?" if len(kw) >= 3 else ""
+        pattern = r"(?<![a-z0-9])" + re.escape(kw) + suffix + r"(?![a-z0-9])"
+        return re.search(pattern, low) is not None
+    return kw in low
+
+
+def has_any(text: str, keywords: List[str]) -> bool:
     low = _t(text)
-    for k in keywords:
-        kw = k.lower()
-        if re.fullmatch(r"[a-z0-9]+", kw):
-            pattern = r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z0-9])"
-            if re.search(pattern, low):
-                return True
-        elif kw in low:
-            return True
-    return False
+    return any(_kw_hit(low, k.lower()) for k in keywords)
 
 
 def matched_keywords(text: str, keywords: List[str]) -> List[str]:
     low = _t(text)
-    return [k for k in keywords if k.lower() in low]
+    return [k for k in keywords if _kw_hit(low, k.lower())]
 
 
 def _scale_by_unit(num: float, unit: str) -> float:
@@ -213,16 +216,30 @@ def _scale_by_unit(num: float, unit: str) -> float:
 
 
 def extract_money_values(text: str) -> List[float]:
-    """提取 $2,000 / 2000 dollars / $5k / 35万美金 / 月销售额8000 等金额，支持中文万/亿数量词。"""
+    """提取 $2,000 / 2000 dollars / $5k / 35万美金 / 月销售额8000 等金额，支持中文万/亿数量词。
+    同一处金额被多个模式命中时按位置去重，避免"客单价8美金"被重复计入两次。"""
     low = _t(text).replace(",", "")
     values: List[float] = []
+    seen_spans = set()
+
+    def _add(m):
+        span = m.span(1)
+        if span not in seen_spans:
+            seen_spans.add(span)
+            values.append(_scale_by_unit(float(m.group(1)), m.group(2) or ""))
+
     for m in re.finditer(r"\$\s*(\d+(?:\.\d+)?)\s*(k|m|万|亿)?", low):
-        values.append(_scale_by_unit(float(m.group(1)), m.group(2) or ""))
+        _add(m)
     for m in re.finditer(r"(\d+(?:\.\d+)?)\s*(k|m|万|亿)?\s*(?:usd|dollars|dollar|美金|美元)", low):
-        values.append(_scale_by_unit(float(m.group(1)), m.group(2) or ""))
-    # GMV / 月销 / 客单价等中文表述，允许没有显式货币单位（如"月销售额35万"）
-    for m in re.finditer(r"(?:gmv|月销售额|月销|销售额|营业额|客单价|aov)\s*[:：]?\s*\$?\s*(\d+(?:\.\d+)?)\s*(k|m|万|亿)?", low):
-        values.append(_scale_by_unit(float(m.group(1)), m.group(2) or ""))
+        _add(m)
+    # GMV / 月销 / 客单价等中文表述，允许没有显式货币单位（如"月销售额35万"）。
+    # 排除后面紧跟"单/orders"（订单量不是金额）或"元/块/人民币/rmb/¥"（人民币不能按美元阈值算）的情况；
+    # (?!\d)防止回溯截短数字绕过排除（如"3000单"退成匹配"300"）。
+    for m in re.finditer(
+        r"(?:gmv|月销售额|月销|销售额|营业额|客单价|aov)\s*[:：]?\s*\$?\s*(\d+(?:\.\d+)?)(?!\d)\s*(k|m|万|亿)?(?!\s*(?:\d|万|亿|单|orders?|元|块|人民币|rmb|¥))",
+        low,
+    ):
+        _add(m)
     return values
 
 
@@ -258,26 +275,34 @@ def extract_followers(text: str) -> float:
 def extract_order_count(text: str) -> float:
     low = _t(text).replace(",", "")
     max_orders = 0.0
-    for pat in [r"(\d+)\s*(orders|订单)", r"月\s*(\d+)\s*(单|订单)"]:
-        for m in re.finditer(pat, low):
-            max_orders = max(max_orders, float(m.group(1)))
+    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*(k|m|万|亿)?\s*(?:orders?|订单|单)", low):
+        max_orders = max(max_orders, _scale_by_unit(float(m.group(1)), m.group(2) or ""))
     return max_orders
+
+
+def has_b2b_factory_evidence(low: str) -> bool:
+    """工厂B2B的强证据判断，detect_client_type与detect_product_features共用一份，避免两处词表漂移。
+    裸"工厂/factory"不构成B2B证据（"自有工厂供应链"是现有卖家的供应链描述），必须搭配贸易语境词。"""
+    if has_any(low, ["oem", "odm", "b2b", "manufacturer", "询盘", "代工", "贴牌", "工厂直营", "出口工厂"]):
+        return True
+    return has_any(low, ["factory", "工厂", "厂家"]) and has_any(low, ["批发", "wholesale", "对外", "出口", "外贸"])
 
 
 def detect_client_type(text: str) -> str:
     low = _t(text)
-    # 明确规则：先看是否有具体电商店铺/GMV证据（现有卖家），避免"自有工厂供应链"这类
-    # 供应链侧描述被"工厂"关键词误判为工厂B2B；工厂B2B需要更明确的B2B/批发/OEM证据。
-    if has_any(low, ["shopify", "amazon", "亚马逊", "tiktok shop", "etsy", "depop", "whatnot", "store", "店铺", "独立站", "月销售额", "月销", "订单", "gmv", "上架"]):
-        return "现有卖家"
-    if has_any(low, ["factory", "manufacturer", "oem", "odm", "b2b", "询盘", "代工", "贴牌", "工厂直营", "出口工厂"]) or (
-        has_any(low, ["工厂", "厂家"]) and has_any(low, ["批发", "wholesale", "对外", "出口", "代工"])
-    ):
+    # 优先级：强B2B证据 > 平台/店铺/GMV强卖家证据 > 分销商 > 创作者 > 泛卖家词（卖/销售/订单）> 新手。
+    # 强B2B先判，避免"OEM代工厂每月接订单500个"被泛词"订单"抢成现有卖家；
+    # 泛卖家词放在创作者之后，避免"达人帮品牌上架商品"被误判成卖家。
+    if has_b2b_factory_evidence(low):
         return "工厂B2B"
+    if has_any(low, ["shopify", "amazon", "亚马逊", "tiktok shop", "etsy", "depop", "whatnot", "store", "店铺", "独立站", "月销售额", "月销", "gmv"]):
+        return "现有卖家"
     if has_any(low, ["distributor", "reseller", "代理", "分销商", "渠道商", "批发商", "批发"]):
         return "分销商"
     if has_any(low, ["creator", "influencer", "kol", "koc", "粉丝", "followers", "content creator", "博主", "达人", "网红"]):
         return "创作者"
+    if has_any(low, ["卖", "销售", "sell", "selling", "订单", "上架"]):
+        return "现有卖家"
     if has_any(low, ["new", "beginner", "新手", "刚开始", "idea", "想法", "还没开始"]):
         return "新手"
     return "待确认"
@@ -290,9 +315,12 @@ def detect_compliance(text: str, override: str = "Auto") -> Tuple[str, str]:
             "Gray needs approval": "灰色",
             "Red not allowed": "红线",
         }
-        label = mapping.get(override, "合规")
-        action = next((v["action"] for v in CONFIG["compliance"].values() if v["label"] == label), "")
-        return label, f"人工选择：{label}。{action}"
+        label = mapping.get(override)
+        # 未知的override值不能fail-open成"合规"（否则改个选项文案就把人工红线否决静默变绿灯）；
+        # 回退到系统自动判断。
+        if label is not None:
+            action = next((v["action"] for v in CONFIG["compliance"].values() if v["label"] == label), "")
+            return label, f"人工选择：{label}。{action}"
 
     low = _t(text)
     for level in ["red", "gray", "green"]:
@@ -337,9 +365,8 @@ def detect_product_features(text: str) -> Dict[str, bool]:
         "强解释": has_any(low, ["how to", "tutorial", "complex", "education", "解释", "教程", "功能", "使用方法", "技术", "b2b", "oem"]),
         "可寄样": has_any(low, ["sample", "seeding", "寄样", "样品", "测评", "review", "unboxing", "开箱"]),
         "可标准化": has_any(low, ["sku", "standard", "标准", "现货", "ready stock", "库存", "同款"]),
-        # 注意：不能只靠裸"工厂/factory"判断B2B长决策，否则"自有工厂供应链"这类现有卖家会被误判成B2B。
-        "B2B长决策": has_any(low, ["b2b", "oem", "odm", "manufacturer", "wholesale", "批发", "询盘", "报价", "采购决策", "代工", "贴牌"])
-        or (has_any(low, ["factory", "工厂", "厂家"]) and has_any(low, ["批发", "wholesale", "对外", "出口", "代工", "manufacturer"])),
+        # 复用has_b2b_factory_evidence：裸"工厂/factory"不构成B2B证据，避免与detect_client_type词表漂移。
+        "B2B长决策": has_b2b_factory_evidence(low) or has_any(low, ["wholesale", "批发", "报价", "采购决策"]),
     }
 
 
@@ -414,7 +441,7 @@ def score_supply(text: str) -> Tuple[int, str]:
     stable_kws = [
         "stable supplier", "own supplier", "own factory", "in-house factory", "factory direct",
         "自有供应链", "自有工厂", "自营工厂", "自建供应链", "工厂直营", "长期合作供应商",
-        "稳定供应链", "资深电商", "自带货",
+        "稳定供应链", "稳定供应商", "长期供应商", "固定供应商", "供应链稳定", "资深电商", "自带货",
     ]
     if has_any(low, stable_kws):
         return 20, "客户有自有稳定供应链或属于资深电商自带货。"
@@ -428,11 +455,12 @@ def score_supply(text: str) -> Tuple[int, str]:
     workable_kws = ["easy to source", "品类可做", "容易找货", "好找货", "已有替代供应商", "有替代供应商"]
 
     # 先判否定/没有货源的表述，再决定给分；"无货源"本身不再默认给15分。
+    # 说出了明确合规品类（如"找货，品类是服装"）视为"品类可做"证据，复用合规绿名单。
     if has_any(low, no_supply_kws):
         if has_any(low, high_risk_kws):
             return 0, "客户无货源且品类/供应链风险高。"
-        if has_any(low, workable_kws):
-            return 15, "客户无货源，但品类明确可做（有替代供应商或找货难度低）。"
+        if has_any(low, workable_kws) or has_any(low, CONFIG["compliance"]["green"]["keywords"]):
+            return 15, "客户无货源，但品类明确可做（说出了明确合规品类，或找货难度低）。"
         if has_any(low, uncertain_kws):
             return 10, "客户无货源，且供应链风险中等，需要进一步评估。"
         return 0, "客户目前无货源，且未提供品类可做的证据，暂按0分处理，需先确认品类可行性（待补证据）。"
@@ -447,12 +475,13 @@ def score_supply(text: str) -> Tuple[int, str]:
 def score_paid(text: str) -> Tuple[int, str]:
     low = _t(text)
     money = max_money(text)
+    # 先判否定表述，避免"没有广告预算/不想投放"被"广告预算/投放"正向子串误判成有付费意愿。
+    if has_any(low, ["free only", "only free", "no budget", "没有预算", "没有广告预算", "无预算", "不想花钱", "只要免费", "只想免费", "免费工具", "不投", "不投放", "不做广告", "不打算投"]):
+        return 0, "客户只要免费工具或明确不投营销，服务优先级封顶L2自助。"
     if money >= CONFIG["value_gate"]["high_budget_min"] or has_any(low, ["paid ads", "facebook ads", "google ads", "tiktok ads", "meta ads", "广告预算", "投过广告", "投放"]):
         return 25, "客户有明确预算≥$2,000，或有过付费广告经验。"
     if has_any(low, ["small test", "小额测试", "willing to test", "愿意测试", "try ads", "试投", "先试"]):
         return 15, "客户有兴趣，愿意先做小额测试。"
-    if has_any(low, ["free only", "only free", "不投", "免费", "no budget", "没有预算", "不想花钱", "只要免费"]):
-        return 0, "客户只要免费工具或明确不投营销，服务优先级封顶L2自助。"
     return 0, "访谈未提及预算或付费营销意愿，暂无证据评分，需先补充预算信息（待补证据）。"
 
 
@@ -460,7 +489,8 @@ def score_private(text: str) -> Tuple[int, str]:
     low = _t(text)
     followers = extract_followers(text)
     er_values = extract_percent_values(text)
-    if (followers >= 10000 and any(v >= 3 for v in er_values)) or has_any(low, ["er 3%", "互动率3", "成规模私域", "large community", "strong community"]):
+    # 注意：不要放"er 3%"这类含空格的英文短语，会子串误命中 over 3%/under 3% 的词尾。
+    if (followers >= 10000 and any(v >= 3 for v in er_values)) or has_any(low, ["互动率3", "成规模私域", "large community", "strong community"]):
         return 15, "客户有成规模私域，且互动率达到或接近ER≥3%。"
     if followers > 0 or has_any(low, ["少量私域", "some community", "small community", "微信群", "discord", "telegram", "email list", "customer list", "社群", "私域"]):
         return 8, "客户有少量私域或社群资源。"
@@ -571,8 +601,8 @@ def determine_marketing_subtypes(text: str, compliance: str, scores: Dict[str, i
     if compliance == "红线":
         return [], ["红线品类不进入营销服务判断。"]
 
-    # AI矩阵号：真正的冷启动（私域弱 且 原渠道销售也弱），不能只因私域为0/中性就默认冷启动
-    cold_start = scores.get("private_traffic", 0) in [0, 7] and scores.get("existing_sales", 0) <= 7
+    # AI矩阵号：真正的冷启动（私域无证据 且 原渠道销售也弱），不能只因私域为0就默认冷启动
+    cold_start = scores.get("private_traffic", 0) == 0 and scores.get("existing_sales", 0) <= 7
     if ("Traffic / Ads" in pains or "Content / UGC" in pains or cold_start) and scores.get("paid_marketing_willingness", 0) > 0:
         subtypes.append("AI社媒矩阵号")
         reasons.append("客户存在冷启动、内容蓄水或流量基础不足的问题。")
@@ -980,13 +1010,28 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
     service = determine_service_combo(text, axes, evidence, compliance, scores)
     marketing_subtypes, marketing_reasons = determine_marketing_subtypes(text, compliance, scores)
     value_tier, rhythm, value_reason = determine_value_and_priority(scores, axes, service, evidence)
-    profile = make_client_profile(text, scores, axes, service, marketing_subtypes, compliance, evidence)
-    reason = build_reason(compliance_reason, service["reason"], value_reason, evidence_reason)
     pains = detect_pain_points(text)
     signals = detect_signals(text)
     needed, not_app = missing_info(text, axes, service, marketing_subtypes)
     actions = next_actions_by_pain(text, service, marketing_subtypes)
     tasks = build_am_checklist(service, marketing_subtypes)
+
+    # 红线否决必须贯穿全部输出：价值档、下一步动作、补问项都走否决链路，
+    # 不能一边显示"合规否决"一边给出价值档=高和推进客户的话术。
+    if compliance == "红线":
+        value_tier, rhythm = "低", "待培育"
+        value_reason = "红线品类不进入价值评估与服务流程。"
+        actions = [{
+            "Pain Point": "Compliance",
+            "内部动作": "停止推进：不进入付款、广告或sourcing流程；如客户坚持该品类，转人工合规复核。",
+            "对客户说的动作": "这个品类目前无法通过我们的合规审核，暂时无法提供采购、建站或推广支持；如果后续品类有调整，我们可以重新评估。",
+        }]
+        needed = []
+        not_app = ["红线品类：暂停信息补齐，不进入常规服务流程。"]
+        tasks = [{"服务": "合规", "阶段": "合规否决", "任务": "停止推进并记录红线原因；如有异议转人工合规复核", "状态": "待跟进"}]
+
+    profile = make_client_profile(text, scores, axes, service, marketing_subtypes, compliance, evidence)
+    reason = build_reason(compliance_reason, service["reason"], value_reason, evidence_reason)
 
     st.subheader("客户画像 Client Profile")
     c1, c2, c3, c4 = st.columns(4)
