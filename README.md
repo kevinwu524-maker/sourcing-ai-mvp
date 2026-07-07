@@ -17,7 +17,7 @@ V10 focuses on employee-friendly usage and safer review flow.
 ```bash
 cd ~/Downloads/sourcing-ai-mvp-main
 python3 -m pip install -r requirements.txt
-python3 -m streamlit run app.py
+python3 -m streamlit run app(1).py
 ```
 
 Then open:
