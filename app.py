@@ -601,6 +601,22 @@ def calculate_scores(text: str) -> Tuple[Dict[str, int], Dict[str, str], Dict[st
 
 LLM_MODEL = "claude-opus-4-8"
 
+
+def _secret(name: str) -> Optional[str]:
+    """先读环境变量，再读Streamlit secrets。"""
+    val = os.environ.get(name)
+    if val:
+        return val
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
+def llm_model_name() -> str:
+    """实际使用的模型名：内网/自建网关可用 LLM_MODEL secret 覆盖默认值。"""
+    return _secret("LLM_MODEL") or LLM_MODEL
+
 LLM_PAIN_ENUM = [
     "Sourcing", "Traffic / Ads", "Affiliate / Creator Sales", "Distributor / Reseller",
     "B2B Leads", "Store Setup", "Conversion", "Logistics", "Content / UGC", "Not clear",
@@ -648,32 +664,70 @@ LLM_SYSTEM_PROMPT = """你是一个跨境电商客户画像分析系统的信号
 8. key_evidence引用原文关键短语（每条≤30字），说明关键判断的依据。"""
 
 
+def _parse_json_loose(text_out: str) -> Dict[str, Any]:
+    """容错解析模型输出：剥掉markdown代码块围栏和JSON前后的多余文字。"""
+    s = text_out.strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
+        s = re.sub(r"\s*```$", "", s)
+    start, end = s.find("{"), s.rfind("}")
+    if start != -1 and end > start:
+        s = s[start:end + 1]
+    return json.loads(s)
+
+
 def _llm_extract_impl(text: str) -> Dict[str, Any]:
     """调用Claude API做结构化信号提取。成功返回提取的dict；失败抛异常（异常不会被st.cache_data缓存，
-    这样用户补配key后重试不会命中之前失败的缓存）。"""
+    这样用户补配key后重试不会命中之前失败的缓存）。
+    兼容内网/自建网关：ANTHROPIC_BASE_URL 指向网关地址，ANTHROPIC_AUTH_TOKEN 用于Bearer认证
+    （二选一或并存均可），LLM_MODEL 覆盖模型名。网关不支持 structured outputs / adaptive thinking
+    时（返回400），自动降级为普通JSON模式重试一次并容错解析。"""
     try:
         import anthropic
     except ImportError:
         raise RuntimeError("未安装 anthropic SDK：请先 pip install anthropic")
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        try:
-            api_key = st.secrets.get("ANTHROPIC_API_KEY")
-        except Exception:
-            api_key = None
+    client_kwargs: Dict[str, Any] = {}
+    if _secret("ANTHROPIC_API_KEY"):
+        client_kwargs["api_key"] = _secret("ANTHROPIC_API_KEY")
+    if _secret("ANTHROPIC_AUTH_TOKEN"):
+        client_kwargs["auth_token"] = _secret("ANTHROPIC_AUTH_TOKEN")
+    if _secret("ANTHROPIC_BASE_URL"):
+        client_kwargs["base_url"] = _secret("ANTHROPIC_BASE_URL")
+    client = anthropic.Anthropic(**client_kwargs)
 
-    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
-    resp = client.messages.create(
-        model=LLM_MODEL,
-        max_tokens=16000,
-        thinking={"type": "adaptive"},
-        system=LLM_SYSTEM_PROMPT,
-        output_config={"format": {"type": "json_schema", "schema": LLM_EXTRACTION_SCHEMA}},
-        messages=[{"role": "user", "content": f"客户访谈内容：\n{text}"}],
-    )
-    block_text = next(b.text for b in resp.content if b.type == "text")
-    return json.loads(block_text)
+    base_kwargs: Dict[str, Any] = {
+        "model": llm_model_name(),
+        "max_tokens": 16000,
+        "messages": [{"role": "user", "content": f"客户访谈内容：\n{text}"}],
+    }
+    try:
+        resp = client.messages.create(
+            system=LLM_SYSTEM_PROMPT,
+            thinking={"type": "adaptive"},
+            output_config={"format": {"type": "json_schema", "schema": LLM_EXTRACTION_SCHEMA}},
+            **base_kwargs,
+        )
+        block_text = next(b.text for b in resp.content if b.type == "text")
+        data = json.loads(block_text)
+    except (anthropic.BadRequestError, TypeError):
+        # 内网网关常不支持 structured outputs / thinking 参数：降级为普通JSON模式
+        schema_hint = json.dumps(LLM_EXTRACTION_SCHEMA["properties"], ensure_ascii=False)
+        resp = client.messages.create(
+            system=(
+                LLM_SYSTEM_PROMPT
+                + "\n\n输出要求：只输出一个JSON对象，禁止任何解释文字或markdown代码块。"
+                + "字段名与enum取值必须严格符合以下schema properties：\n" + schema_hint
+            ),
+            **base_kwargs,
+        )
+        block_text = next(b.text for b in resp.content if b.type == "text")
+        data = _parse_json_loose(block_text)
+
+    missing = [k for k in LLM_EXTRACTION_SCHEMA["required"] if k not in data]
+    if missing:
+        raise RuntimeError(f"模型返回缺少字段：{'、'.join(missing)}，请检查网关/模型是否能稳定输出JSON")
+    return data
 
 
 # Streamlit每次交互都会整脚本重跑，必须缓存成功结果，避免同一段文本反复调用API
@@ -702,7 +756,7 @@ def scores_from_extraction(d: Dict[str, Any]) -> Tuple[Dict[str, int], Dict[str,
         "无货源或供应链风险高": (0, "客户无货源且品类/供应链风险高。"),
         "未提及": (10, "访谈未充分说明货源稳定性，暂按中等风险处理（待补证据）。"),
     }
-    scores["supply_stability"], reasons["supply_stability"] = supply_map[d["supply_status"]]
+    scores["supply_stability"], reasons["supply_stability"] = supply_map.get(str(d.get("supply_status")), supply_map["未提及"])
 
     budget = d.get("budget_usd") or 0
     pw = d["paid_willingness"]
@@ -741,7 +795,7 @@ def scores_from_extraction(d: Dict[str, Any]) -> Tuple[Dict[str, int], Dict[str,
         "纯新手": (0, "客户属于纯新手。"),
         "未提及": (0, "访谈未体现明确电商/建站经验，暂按纯新手处理。"),
     }
-    scores["ecommerce_foundation"], reasons["ecommerce_foundation"] = ecommerce_map[d["ecommerce_experience"]]
+    scores["ecommerce_foundation"], reasons["ecommerce_foundation"] = ecommerce_map.get(str(d.get("ecommerce_experience")), ecommerce_map["未提及"])
 
     gmv = d.get("monthly_gmv_usd") or 0
     orders = d.get("monthly_orders") or 0
@@ -768,7 +822,7 @@ def scores_from_extraction(d: Dict[str, Any]) -> Tuple[Dict[str, int], Dict[str,
         "几乎没有": (0, "客户几乎没有可直接用于上架或营销的素材。"),
         "未提及": (0, "访谈未提及素材情况，暂按几乎没有处理（待补证据）。"),
     }
-    scores["materials_readiness"], reasons["materials_readiness"] = materials_map[d["materials_status"]]
+    scores["materials_readiness"], reasons["materials_readiness"] = materials_map.get(str(d.get("materials_status")), materials_map["未提及"])
 
     return scores, reasons
 
@@ -1401,16 +1455,6 @@ MAX_VERSIONS_PER_CLIENT = 20
 SUPABASE_TABLE = "client_records"
 
 
-def _secret(name: str) -> Optional[str]:
-    val = os.environ.get(name)
-    if val:
-        return val
-    try:
-        return st.secrets.get(name)
-    except Exception:
-        return None
-
-
 def _supabase_cfg() -> Optional[Tuple[str, str]]:
     url = _secret("SUPABASE_URL")
     key = _secret("SUPABASE_SERVICE_KEY") or _secret("SUPABASE_KEY")
@@ -1597,7 +1641,7 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
                 f"AI判断：{llm_data['compliance_level']}（{llm_data['compliance_reason']}）；"
                 f"关键词红线引擎判断：{keyword_comp}。两者取更严的一档：{compliance}。"
             )
-        st.caption(f"🤖 信号提取引擎：AI（{LLM_MODEL}）+ 关键词红线兜底")
+        st.caption(f"🤖 信号提取引擎：AI（{llm_model_name()}）+ 关键词红线兜底")
     else:
         compliance, compliance_reason = detect_compliance(text, compliance_override)
         scores, score_reasons, axes = calculate_scores(text)
@@ -1819,7 +1863,7 @@ def render_analysis(text: str, client_code: str = "", source_label: str = "正�
     if st.button("💾 保存/更新到客户档案", key=f"save_record_{source_label}"):
         snapshot = {
             "source": source_label,
-            "engine": f"AI（{LLM_MODEL}）+ 关键词兜底" if llm_data else "关键词规则引擎",
+            "engine": f"AI（{llm_model_name()}）+ 关键词兜底" if llm_data else "关键词规则引擎",
             "transcript": text,
             "客户类型": profile["客户类型"],
             "主要痛点": profile["主要痛点"],
