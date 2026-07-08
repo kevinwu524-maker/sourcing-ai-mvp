@@ -676,12 +676,79 @@ def _parse_json_loose(text_out: str) -> Dict[str, Any]:
     return json.loads(s)
 
 
+def _json_mode_system() -> str:
+    """非structured-outputs路径共用的system prompt：附带schema要求。"""
+    schema_hint = json.dumps(LLM_EXTRACTION_SCHEMA["properties"], ensure_ascii=False)
+    return (
+        LLM_SYSTEM_PROMPT
+        + "\n\n输出要求：只输出一个JSON对象，禁止任何解释文字或markdown代码块。"
+        + "字段名与enum取值必须严格符合以下schema properties：\n" + schema_hint
+    )
+
+
+def _openai_gateway_cfg() -> Optional[Tuple[str, str]]:
+    """OpenAI协议网关配置：OPENAI_BASE_URL + OPENAI_API_KEY。配置后优先于Anthropic直连。"""
+    url = _secret("OPENAI_BASE_URL")
+    key = _secret("OPENAI_API_KEY")
+    if url and key:
+        return url.rstrip("/"), key
+    return None
+
+
+def _extract_via_openai_gateway(text: str) -> Dict[str, Any]:
+    """走OpenAI协议网关（如公司内网LLM网关）：优先 /chat/completions，
+    网关只开了Responses API时（404）自动退回 /responses。"""
+    import requests
+    url, key = _openai_gateway_cfg()
+    if not _secret("LLM_MODEL"):
+        raise RuntimeError("使用OpenAI协议网关时，请在Secrets里同时配置 LLM_MODEL（网关支持的模型名，如 gpt-4.1）")
+    model = llm_model_name()
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    system = _json_mode_system()
+    user = f"客户访谈内容：\n{text}"
+
+    resp = requests.post(
+        f"{url}/chat/completions", headers=headers, timeout=120,
+        json={"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]},
+    )
+    if resp.status_code == 404:
+        # 网关只提供 Responses API（如 /v1/responses 示例）
+        resp2 = requests.post(
+            f"{url}/responses", headers=headers, timeout=120,
+            json={"model": model, "input": system + "\n\n" + user},
+        )
+        resp2.raise_for_status()
+        body = resp2.json()
+        out_text = body.get("output_text") or ""
+        if not out_text:
+            parts = []
+            for item in body.get("output", []) or []:
+                for c in (item.get("content") or []):
+                    if isinstance(c, dict) and c.get("text"):
+                        parts.append(c["text"])
+            out_text = "\n".join(parts)
+        if not out_text:
+            raise RuntimeError("网关Responses接口返回中未找到文本输出")
+        return _parse_json_loose(out_text)
+    resp.raise_for_status()
+    return _parse_json_loose(resp.json()["choices"][0]["message"]["content"])
+
+
 def _llm_extract_impl(text: str) -> Dict[str, Any]:
-    """调用Claude API做结构化信号提取。成功返回提取的dict；失败抛异常（异常不会被st.cache_data缓存，
+    """调用LLM做结构化信号提取。成功返回提取的dict；失败抛异常（异常不会被st.cache_data缓存，
     这样用户补配key后重试不会命中之前失败的缓存）。
-    兼容内网/自建网关：ANTHROPIC_BASE_URL 指向网关地址，ANTHROPIC_AUTH_TOKEN 用于Bearer认证
-    （二选一或并存均可），LLM_MODEL 覆盖模型名。网关不支持 structured outputs / adaptive thinking
-    时（返回400），自动降级为普通JSON模式重试一次并容错解析。"""
+    三种接入方式（按优先级）：
+    1. OpenAI协议网关（公司内网常见）：OPENAI_BASE_URL + OPENAI_API_KEY + LLM_MODEL
+    2. Anthropic协议网关：ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN（LLM_MODEL可选覆盖）
+    3. Anthropic官方直连：只配 ANTHROPIC_API_KEY
+    网关不支持 structured outputs / adaptive thinking 时自动降级为普通JSON模式并容错解析。"""
+    if _openai_gateway_cfg():
+        data = _extract_via_openai_gateway(text)
+        missing = [k for k in LLM_EXTRACTION_SCHEMA["required"] if k not in data]
+        if missing:
+            raise RuntimeError(f"模型返回缺少字段：{'、'.join(missing)}，请检查网关/模型是否能稳定输出JSON")
+        return data
+
     try:
         import anthropic
     except ImportError:
@@ -712,15 +779,7 @@ def _llm_extract_impl(text: str) -> Dict[str, Any]:
         data = json.loads(block_text)
     except (anthropic.BadRequestError, TypeError):
         # 内网网关常不支持 structured outputs / thinking 参数：降级为普通JSON模式
-        schema_hint = json.dumps(LLM_EXTRACTION_SCHEMA["properties"], ensure_ascii=False)
-        resp = client.messages.create(
-            system=(
-                LLM_SYSTEM_PROMPT
-                + "\n\n输出要求：只输出一个JSON对象，禁止任何解释文字或markdown代码块。"
-                + "字段名与enum取值必须严格符合以下schema properties：\n" + schema_hint
-            ),
-            **base_kwargs,
-        )
+        resp = client.messages.create(system=_json_mode_system(), **base_kwargs)
         block_text = next(b.text for b in resp.content if b.type == "text")
         data = _parse_json_loose(block_text)
 
