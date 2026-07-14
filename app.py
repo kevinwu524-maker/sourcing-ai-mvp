@@ -1651,6 +1651,8 @@ st.set_page_config(page_title="Client Profile & Route Recommender", page_icon="�
 st.title("🧭 Client Profile & Route Recommender")
 st.caption("三轴就绪度 + 服务组合建议 + AM跟进Checklist｜面向电商卖家/品牌/分销/创作者客户")
 
+st.link_button("👉 了解更多 / Get Started", "https://example.com/#cta", type="primary")
+
 with st.expander("适用范围说明｜请先看", expanded=True):
     st.info(
         "本工具主要适用于电商卖家、品牌方、分销商、创作者/KOL/KOC、独立站或平台卖家等客户画像分析。"
